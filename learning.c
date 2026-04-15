@@ -128,22 +128,150 @@ void init_parser(Parser *p, Lexer *lex) {
     p->curr = next_token(lex);
 }
 
+static Token peek(Parser *p) {
+    return p->curr;
+}
+
+static Token advance(Parser *p) {
+    Token tmp;
+
+    tmp = p->curr;
+
+    p->curr= next_token(p->l);
+
+    return tmp;
+}
+
+Node *parse_expr(Parser *p);
+Node *parse_term(Parser *p);
+Node *parse_factor(Parser *p);
+
+Node *parse_expr(Parser *p) {
+    Node *left = parse_term(p);
+    while(p->curr.type == TOK_PLUS || p->curr.type == TOK_MINUS) {
+        Node *new = malloc(sizeof(Node));
+        new->type = NODE_BINOP;
+        if(p->curr.type == TOK_PLUS) {
+            new->uni.binop.op = OP_ADD;
+        } else {
+            new->uni.binop.op = OP_SUB;
+        }
+        new->uni.binop.left = left;
+        advance(p);
+
+        Node *right = parse_term(p);
+        new->uni.binop.right = right;
+        left = new;
+    }
+    return left;
+}
+
+Node *parse_term(Parser *p) {
+    Node *left = parse_factor(p);
+    while(p->curr.type == TOK_STAR || p->curr.type == TOK_SLASH) {
+        Node *new = malloc(sizeof(Node));
+        new->type = NODE_BINOP;
+        if(p->curr.type == TOK_STAR) {
+            new->uni.binop.op = OP_MUL;
+        } else {
+            new->uni.binop.op = OP_DIV;
+        }
+        new->uni.binop.left = left;
+        advance(p);
+
+        Node *right = parse_factor(p);
+        new->uni.binop.right = right;
+        left = new;
+    }
+    return left;
+}
+
+Node *parse_factor(Parser *p) {
+    if(p->curr.type == TOK_INT) {
+        Node *new = malloc(sizeof(Node));
+        new->type = NODE_INT;
+        new->uni.int_value = p->curr.value.int_val;
+        advance(p);
+        return new;
+    }
+    if(p->curr.type == TOK_LPAREN) {
+        advance(p);
+        Node *tmp =parse_expr(p);
+        advance(p);
+        return tmp;
+    } else {
+        fprintf(stderr, "unexpected token\n");
+        exit(1);
+    }
+}
+
+void print_ast(Node *n) {
+    if(n->type == NODE_INT) {
+        printf("%d", n->uni.int_value);
+    }
+    else {
+        print_ast(n->uni.binop.left);
+        switch(n->uni.binop.op) {
+            case OP_ADD: 
+                printf("+");
+                break;
+            case OP_SUB:
+                printf("-");
+                break;
+            case OP_MUL:
+                printf("*");
+                break;
+            case OP_DIV:
+                printf("/");
+                break;
+        }
+        print_ast(n->uni.binop.right);
+    }
+}
+
 /* ===== EVALUATOR ===== */
+
+int eval(Node *n) {
+    if(n->type == NODE_INT) {
+        return n->uni.int_value;
+    }
+    else {
+        int x = eval(n->uni.binop.left);
+        int y = eval(n->uni.binop.right);
+        switch(n->uni.binop.op) {
+            case OP_ADD: 
+                return x + y;
+            case OP_SUB:
+                return x - y;
+            case OP_MUL:
+                return x * y;
+            case OP_DIV:
+                return x / y;
+        }
+    }
+}
 
 /* ===== MAIN ===== */
 
 int main(void) {
-    Lexer l;
-    Token t;
+    char x[128];
+    while(1) {
+        printf("Enter expression to compute: ");
+        char *res = fgets(x, 128, stdin);
 
-    char *test = "(1) * 4 + (6 / 2)";
+        if(res == NULL) {
+            break;
+        }
 
-    l.pos = test;
+        Parser p;
+        Lexer l;
 
-    do {
-        t = next_token(&l);
-        print_token(t);
-    } while(t.type != TOK_EOF);
+        l.pos=x;
+
+        init_parser(&p, &l);
+
+        printf("%d\n", eval(parse_expr(&p)));
+    }
 
     return 0;
 }
