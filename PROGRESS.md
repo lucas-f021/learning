@@ -31,30 +31,34 @@ TOK_INT, TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_LPAREN, TOK_RPAREN, TOK_E
 ### Lexer struct (typedef'd)
 - `char *pos` — pointer to current position in source string
 
-### next_token(Lexer *l) — partially done
-- Skips whitespace with while loop
-- Handles TOK_INT: saves start pointer, advances while isdigit, calls atoi, returns Token
-- MISSING: cases for +, -, *, /, (, ), EOF, and null/unknown character handling
+### next_token(Lexer *l) — complete
+- Skips whitespace
+- Switch on `*l->pos`:
+  - `'+' '-' '*' '/' '(' ')'` → delegated to `casehelper(l, TokenType)` which builds the Token, advances pos, returns by value
+  - `'\0'` → TOK_EOF (does NOT advance — safe to call repeatedly after end of input)
+  - `default` → if isdigit, read multi-digit int via atoi on a saved start pointer; else fprintf error + exit(1)
+
+### casehelper(Lexer *l, TokenType type) — helper
+- Collapses the repeated "build Token, advance pos, return" pattern for all single-char operator/paren tokens
+
+### Test driver (main + print_token) — complete
+- Hardcoded source string, Lexer pointed at it
+- do-while loop: `t = next_token(&l); print_token(t);` until `t.type == TOK_EOF`
+- `print_token` switches on type, prints human-readable name; TOK_INT also prints `value.int_val`
+- Verified output on `"1 + 2 * (3-4)"` — all token types exercised, EOF terminates cleanly
 
 ---
 
 ## What's next (pick up here)
 
-1. Add the remaining switch cases to next_token:
-   - `'+'` → TOK_PLUS (advance pos, return token)
-   - `'-'` → TOK_MINUS
-   - `'*'` → TOK_STAR
-   - `'/'` → TOK_SLASH
-   - `'('` → TOK_LPAREN
-   - `')'` → TOK_RPAREN
-   - `'\0'` → TOK_EOF (do NOT advance past null terminator)
-   - default → error/unknown token
+1. **Parser** — recursive descent, builds AST.
+   - Define AST node types (binary op, int literal — tagged union like Token)
+   - Grammar for Tier 1: expr → term (('+'|'-') term)*; term → factor (('*'|'/') factor)*; factor → INT | '(' expr ')'
+   - Tree shape encodes precedence — lower nodes evaluated first
 
-2. After lexer is complete: test it by printing token stream before building parser.
+2. **Evaluator** — recursive tree walk, returns int.
 
-3. Then: parser (recursive descent, builds AST).
-
-4. Then: evaluator (recursive tree walk).
+3. **REPL** — read line, feed to lexer, parse, eval, print. Loop.
 
 ---
 
