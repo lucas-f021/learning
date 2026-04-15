@@ -3,6 +3,8 @@
 #include <string.h>
 #include <ctype.h>
 
+/* ===== LEXER ===== */
+
 typedef enum {
     TOK_INT,
     TOK_PLUS,
@@ -12,18 +14,18 @@ typedef enum {
     TOK_LPAREN,
     TOK_RPAREN,
     TOK_EOF
-}TokenType;
+} TokenType;
 
 typedef struct {
     TokenType type;
     union {
         int int_val;
     } value;
-}Token;
+} Token;
 
 typedef struct {
     char *pos;
-}Lexer;
+} Lexer;
 
 static Token casehelper(Lexer *l, TokenType type) {
     Token t;
@@ -32,43 +34,29 @@ static Token casehelper(Lexer *l, TokenType type) {
     return t;
 }
 
-static void print_token(Token t) {
-    switch (t.type) {
-        case TOK_INT:    printf("INT(%d)\n", t.value.int_val); break;
-        case TOK_PLUS:   printf("PLUS\n"); break;
-        case TOK_MINUS:  printf("MINUS\n"); break;
-        case TOK_STAR:   printf("STAR\n"); break;
-        case TOK_SLASH:  printf("SLASH\n"); break;
-        case TOK_LPAREN: printf("LPAREN\n"); break;
-        case TOK_RPAREN: printf("RPAREN\n"); break;
-        case TOK_EOF:    printf("EOF\n"); break;
-    }
-}
-
-
 Token next_token(Lexer *l) {
     while(isspace(*l->pos)) {
         l->pos++;
     }
     switch(*l->pos) {
-        case '+': 
+        case '+':
             return casehelper(l, TOK_PLUS);
-        
-        case '-': 
+
+        case '-':
             return casehelper(l, TOK_MINUS);
-        
-        case '*': 
+
+        case '*':
             return casehelper(l, TOK_STAR);
-    
-        case '/': 
+
+        case '/':
             return casehelper(l, TOK_SLASH);
-        
-        case '(': 
+
+        case '(':
             return casehelper(l, TOK_LPAREN);
-    
-        case ')': 
+
+        case ')':
             return casehelper(l, TOK_RPAREN);
-        
+
         case '\0': {
             Token t;
             t.type = TOK_EOF;
@@ -91,11 +79,64 @@ Token next_token(Lexer *l) {
     }
 }
 
+static void print_token(Token t) {
+    switch (t.type) {
+        case TOK_INT:    printf("INT(%d)\n", t.value.int_val); break;
+        case TOK_PLUS:   printf("PLUS\n"); break;
+        case TOK_MINUS:  printf("MINUS\n"); break;
+        case TOK_STAR:   printf("STAR\n"); break;
+        case TOK_SLASH:  printf("SLASH\n"); break;
+        case TOK_LPAREN: printf("LPAREN\n"); break;
+        case TOK_RPAREN: printf("RPAREN\n"); break;
+        case TOK_EOF:    printf("EOF\n"); break;
+    }
+}
+
+/* ===== PARSER ===== */
+
+typedef enum {
+    OP_ADD,
+    OP_SUB,
+    OP_MUL,
+    OP_DIV
+} OpType;
+
+typedef enum {
+    NODE_INT,
+    NODE_BINOP
+} NodeType;
+
+typedef struct Node {
+    NodeType type;
+    union {
+        int int_value;
+        struct {
+            OpType op;
+            struct Node *left;
+            struct Node *right;
+        } binop;
+    } uni;
+} Node;
+
+typedef struct {
+    Lexer *l;
+    Token curr;
+} Parser;
+
+void init_parser(Parser *p, Lexer *lex) {
+    p->l = lex;
+    p->curr = next_token(lex);
+}
+
+/* ===== EVALUATOR ===== */
+
+/* ===== MAIN ===== */
+
 int main(void) {
     Lexer l;
     Token t;
 
-    char *test = "1 + 2 * (3-4)";
+    char *test = "(1) * 4 + (6 / 2)";
 
     l.pos = test;
 
