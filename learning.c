@@ -153,6 +153,10 @@ Node *parse_expr(Parser *p) {
     Node *left = parse_term(p);
     while(p->curr.type == TOK_PLUS || p->curr.type == TOK_MINUS) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
+        if(new == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
         new->type = NODE_BINOP;
         if(p->curr.type == TOK_PLUS) {
             new->uni.binop.op = OP_ADD;
@@ -173,6 +177,10 @@ Node *parse_term(Parser *p) {
     Node *left = parse_factor(p);
     while(p->curr.type == TOK_STAR || p->curr.type == TOK_SLASH) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
+        if(new == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
         new->type = NODE_BINOP;
         if(p->curr.type == TOK_STAR) {
             new->uni.binop.op = OP_MUL;
@@ -192,6 +200,10 @@ Node *parse_term(Parser *p) {
 Node *parse_factor(Parser *p) {
     if(p->curr.type == TOK_INT) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
+        if(new == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
         new->type = NODE_INT;
         new->uni.int_value = p->curr.value.int_val;
         advance(p);
@@ -200,6 +212,10 @@ Node *parse_factor(Parser *p) {
     if(p->curr.type == TOK_LPAREN) {
         advance(p);
         Node *tmp =parse_expr(p);
+        if(p->curr.type != TOK_RPAREN) {
+            fprintf(stderr, "No closing parenthesis\n");
+            exit(1);
+        }
         advance(p);
         return tmp;
     } else {
