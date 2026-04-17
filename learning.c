@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "arena.h"
 
 /* ===== LEXER ===== */
 
@@ -121,11 +122,13 @@ typedef struct Node {
 typedef struct {
     Lexer *l;
     Token curr;
+    Arena *arena;
 } Parser;
 
-void init_parser(Parser *p, Lexer *lex) {
+void init_parser(Parser *p, Lexer *lex, Arena *arena) {
     p->l = lex;
     p->curr = next_token(lex);
+    p->arena = arena;
 }
 
 static Token peek(Parser *p) {
@@ -149,7 +152,7 @@ Node *parse_factor(Parser *p);
 Node *parse_expr(Parser *p) {
     Node *left = parse_term(p);
     while(p->curr.type == TOK_PLUS || p->curr.type == TOK_MINUS) {
-        Node *new = malloc(sizeof(Node));
+        Node *new = arena_alloc(p->arena, sizeof(Node));
         new->type = NODE_BINOP;
         if(p->curr.type == TOK_PLUS) {
             new->uni.binop.op = OP_ADD;
@@ -169,7 +172,7 @@ Node *parse_expr(Parser *p) {
 Node *parse_term(Parser *p) {
     Node *left = parse_factor(p);
     while(p->curr.type == TOK_STAR || p->curr.type == TOK_SLASH) {
-        Node *new = malloc(sizeof(Node));
+        Node *new = arena_alloc(p->arena, sizeof(Node));
         new->type = NODE_BINOP;
         if(p->curr.type == TOK_STAR) {
             new->uni.binop.op = OP_MUL;
@@ -188,7 +191,7 @@ Node *parse_term(Parser *p) {
 
 Node *parse_factor(Parser *p) {
     if(p->curr.type == TOK_INT) {
-        Node *new = malloc(sizeof(Node));
+        Node *new = arena_alloc(p->arena, sizeof(Node));
         new->type = NODE_INT;
         new->uni.int_value = p->curr.value.int_val;
         advance(p);
@@ -254,23 +257,25 @@ int eval(Node *n) {
 /* ===== MAIN ===== */
 
 int main(void) {
+    Parser p;
+    Lexer l;
+    Arena *a = arena_create(4096);
     char x[128];
     while(1) {
         printf("Enter expression to compute: ");
         char *res = fgets(x, 128, stdin);
 
         if(res == NULL) {
+            arena_destroy(a);
             break;
-        }
-
-        Parser p;
-        Lexer l;
+        } 
 
         l.pos=x;
 
-        init_parser(&p, &l);
+        init_parser(&p, &l, a);
 
         printf("%d\n", eval(parse_expr(&p)));
+        arena_reset(a);
     }
 
     return 0;
