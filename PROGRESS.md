@@ -89,10 +89,19 @@ TOK_INT, TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_LPAREN, TOK_RPAREN, TOK_E
 - NODE_INT returns the stored int
 - NODE_BINOP recursively evals both children, then switches on `op` to combine
 
+### Arena allocator integration — complete
+- `arena.h` / `arena.c` — interface/implementation split with header guard (`#ifndef ARENA_H`), pulled from prior arenaalloc.c project
+- Public API: `arena_create(size)`, `arena_destroy(a)`, `arena_reset(a)`, `arena_alloc(a, size)` (8-byte-aligned bump alloc, NULL on overflow)
+- `Parser` struct gained an `Arena *arena` field; `init_parser` takes and stores it
+- All three `malloc(sizeof(Node))` calls in `parse_expr` / `parse_term` / `parse_factor` swapped to `arena_alloc(p->arena, sizeof(Node))`
+- `main` creates a 4KB arena up front, calls `arena_reset(a)` after each REPL line to invalidate that line's AST, `arena_destroy(a)` on Ctrl-D
+- Zero leaks, no recursive `free_ast` walker needed — all nodes from one line share a lifetime, bulk-freed at once
+- Compile: `gcc -Wall -Wextra learning.c arena.c -o learning`
+
 ### REPL — complete
 - `main` loops reading lines with `fgets(x, 128, stdin)`, breaks on EOF (Ctrl-D)
-- Builds a fresh `Lexer` and `Parser` per iteration, pointing lexer at the input buffer
-- Prints `eval(parse_expr(&p))` for each line
+- Parser and Lexer declared once outside the loop, re-initialized each iteration via `init_parser`
+- Prints `eval(parse_expr(&p))` for each line, then resets the arena
 
 **Verified end-to-end on:**
 - `1+2` → 3
@@ -113,8 +122,9 @@ Tier 1 calculator is functionally complete. Possible next directions:
 1. **Review pass** — loose ends worth looking at:
    - `parse_factor`'s `(` branch advances past the closing token without checking it's actually `)` — malformed input like `(1+2` won't be caught here
    - `eval`'s NODE_BINOP switch has no return after the switch; all enum cases are covered but the compiler may still warn
-   - Each REPL iteration leaks the AST (no recursive free) — fine for tier 1, but an arena would solve it cleanly
+   - ~~Each REPL iteration leaks the AST~~ — fixed by arena integration
    - Division by zero not handled
+   - `arena_alloc` return values aren't NULL-checked — if a single expression exceeds 4KB of nodes, you'll deref NULL. Unlikely in practice but a `checked_alloc` wrapper would harden it.
 
 2. **Tier 2 ideas** (pick when ready): unary minus, variables + assignment, floats, comparison operators, booleans, `if`/`else`, blocks, functions.
 
