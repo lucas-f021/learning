@@ -130,6 +130,79 @@ Tier 1 calculator is functionally complete. Possible next directions:
 
 ---
 
+## Tier 2 — Variables (in progress)
+
+### Scope decision
+- Multiple statements per line, `;` mandatory after every statement
+- New syntax: `let NAME = EXPR ;` for binding, bare `EXPR ;` for eval-and-print
+- Grammar additions:
+  - `program   → statement*`
+  - `statement → 'let' IDENT '=' expr ';' | expr ';'`
+  - `factor    → INT | IDENT | '(' expr ')'` (added IDENT)
+
+### Ownership decision — kept arena and hashmap separate
+- Hashmap stays malloc-based (uses `strdup` for keys, `free` in destroy/delete/resize)
+- Arena stays strictly for AST nodes, reset per line
+- Environment (hashmap) will live for the whole session, independent memory
+- Reason: hashmap has individual per-key mutation (delete/overwrite) which fits malloc/free better than arena; keeping them decoupled avoids the "resize leaks the old bucket array into the arena" problem and keeps `hash.c` project-agnostic
+
+### Hashmap extraction — complete
+- Pulled the prior `customhash.c` project into `hash.h` / `hash.c` (same split pattern as arena)
+- Header guard (`#ifndef HASH_H`), prototypes for `hm_create`, `hm_destroy`, `hm_insert`, `hm_get`, `hm_delete` only (internal helpers like `hm_resize` / `hashfnv1a` stay `static` in `hash.c`, NOT declared in header — `static` in a shared header is a category error)
+- Header includes `<stdbool.h>` + `<stdint.h>` so it stands alone
+- `customhash.c` deleted to avoid double-main collision
+- `learning.c` now `#include "hash.h"`
+- Compile: `gcc -Wall -Wextra learning.c arena.c hash.c -o learning`
+
+### Lexer additions — complete
+- Four new `TokenType`s: `TOK_IDENT`, `TOK_LET`, `TOK_EQ`, `TOK_SEMI`
+- `Token` union gains a second arm: `char *ident` (null-terminated identifier name)
+- Switch in `next_token`:
+  - `'='` → `casehelper(l, TOK_EQ)`
+  - `';'` → `casehelper(l, TOK_SEMI)`
+  - Default branch grew an `else if (isalpha(*l->pos))` path: scan `isalnum` run, compute length via pointer subtraction, check `len == 3 && strncmp(tmp, "let", 3) == 0` for the `let` keyword, else produce `TOK_IDENT` with `strndup(tmp, len)` for the name
+- `print_token` extended with the four new cases (all end with `\n`, `break;` after every case)
+
+**Verified on** `"let x = 5; x + 1"` (temporary lex-only main that did `next_token` + `print_token` in a loop):
+```
+LET
+IDENT(x)
+EQ
+INT(5)
+SEMI
+IDENT(x)
+PLUS
+INT(1)
+EOF
+```
+
+Reverted `main` back to the real parse+eval REPL before committing.
+
+### Known lexer issue to come back to later
+- `TOK_IDENT` names are `strndup`'d, so they escape the arena lifecycle — every line leaks the names because nothing `free`s them. Will tighten once the full pipeline works.
+
+---
+
+## What's next (Tier 2 pickup)
+
+1. **AST additions:** add `NODE_IDENT` and `NODE_LET` to `NodeType`; extend the `Node` union with two new arms (ident carries a `char *name`; let carries `char *name` + `Node *value`).
+
+2. **Parser additions:**
+   - `parse_factor` grows a `TOK_IDENT` case (structurally identical to the `TOK_INT` case, just stores a string). Simplest approach: point NODE_IDENT's name directly at the strndup'd memory from the Token. Leaks per line — fine for now.
+   - New function `parse_let`: advance past `let`, expect IDENT (save name), expect EQ, parse_expr for RHS, expect SEMI, build NODE_LET.
+   - New function `parse_statement`: if curr is TOK_LET → parse_let; else → parse_expr then consume SEMI.
+   - Forward-declaration block at top of parser section needs to grow.
+
+3. **REPL loop change:** instead of `parse_expr` once per line, loop `parse_statement` until `p->curr.type == TOK_EOF`. Each statement gets `eval`'d.
+
+4. **Environment wiring:** `HashMap *env` created once in `main` (before the REPL loop), destroyed on Ctrl-D. Threaded as a parameter into `eval`. NEW: `eval` signature becomes `int eval(Node *n, HashMap *env)`.
+
+5. **Evaluator additions:**
+   - `NODE_IDENT`: `hm_get(env, name, &out)`; if not found → error ("undefined variable"); else return `out`.
+   - `NODE_LET`: recursively eval the value subtree, then `hm_insert(env, name, value)`. Decision: what should a let statement "return"? Probably 0, or just don't print let-statement results in the REPL (track which kind of node was evaluated and skip the `printf("%d\n", ...)` for lets).
+
+---
+
 ## Key concepts covered so far
 - Tagged union pattern for token payloads
 - Lexer as a stateful pointer walker

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "arena.h"
+#include "hash.h"
 
 /* ===== LEXER ===== */
 
@@ -14,13 +15,18 @@ typedef enum {
     TOK_SLASH,
     TOK_LPAREN,
     TOK_RPAREN,
-    TOK_EOF
+    TOK_EOF,
+    TOK_IDENT,
+    TOK_LET,
+    TOK_EQ,
+    TOK_SEMI
 } TokenType;
 
 typedef struct {
     TokenType type;
     union {
         int int_val;
+        char *ident;
     } value;
 } Token;
 
@@ -57,6 +63,12 @@ Token next_token(Lexer *l) {
 
         case ')':
             return casehelper(l, TOK_RPAREN);
+        
+        case '=':
+            return casehelper(l, TOK_EQ);
+
+        case ';':
+            return casehelper(l, TOK_SEMI);
 
         case '\0': {
             Token t;
@@ -73,7 +85,25 @@ Token next_token(Lexer *l) {
             t.type = TOK_INT;
             t.value.int_val = atoi(tmp);
             return t;
-        } else {
+        } else if(isalpha(*l->pos)) {
+            char *tmp = l->pos;
+            while(isalnum(*l->pos)) {
+                l->pos++;
+            }
+            size_t len = l->pos - tmp;
+            if(len == 3) {
+                if(strncmp(tmp, "let", 3) == 0) {
+                    Token t;
+                    t.type = TOK_LET;
+                    return t;
+                }
+            }
+            Token t;
+            t.type = TOK_IDENT;
+            t.value.ident = strndup(tmp, len);
+            return t;
+        }
+        else {
             fprintf(stderr, "unknown char: %c\n", *l->pos);
             exit(1);
         }
@@ -90,6 +120,10 @@ static void print_token(Token t) {
         case TOK_LPAREN: printf("LPAREN\n"); break;
         case TOK_RPAREN: printf("RPAREN\n"); break;
         case TOK_EOF:    printf("EOF\n"); break;
+        case TOK_IDENT: printf("IDENT(%s)\n", t.value.ident); break;
+        case TOK_LET: printf("LET\n"); break;
+        case TOK_EQ: printf("EQ\n"); break;
+        case TOK_SEMI: printf("SEMI\n"); break;
     }
 }
 
@@ -104,7 +138,9 @@ typedef enum {
 
 typedef enum {
     NODE_INT,
-    NODE_BINOP
+    NODE_BINOP,
+    NODE_IDENT,
+    NODE_LET
 } NodeType;
 
 typedef struct Node {
@@ -129,10 +165,6 @@ void init_parser(Parser *p, Lexer *lex, Arena *arena) {
     p->l = lex;
     p->curr = next_token(lex);
     p->arena = arena;
-}
-
-static Token peek(Parser *p) {
-    return p->curr;
 }
 
 static Token advance(Parser *p) {
@@ -213,7 +245,7 @@ Node *parse_factor(Parser *p) {
         advance(p);
         Node *tmp =parse_expr(p);
         if(p->curr.type != TOK_RPAREN) {
-            fprintf(stderr, "No closing parenthesis\n");
+            fprintf(stderr, "Error no closing parenthesis\n");
             exit(1);
         }
         advance(p);
