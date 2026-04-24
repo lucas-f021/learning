@@ -236,6 +236,27 @@ Reverted `main` back to the real parse+eval REPL before committing.
 - First-class functions, calling conventions, environments as first-class values (pointer-to-env captured in closure)
 - The "environments are just pointers" moment — parent env chain enables lexical scoping
 
+### Final step — make it a "real language" (file execution)
+The gap between a REPL toy and a file-runnable language is smaller than it looks. Do this last, after the language features are in place.
+
+**1. Accept a source file instead of (or alongside) REPL input.**
+- Inspect `argc` / `argv[]` in `main`.
+- If given a filename: `fopen` + `fread` (or `fstat` + `mmap`) the whole file into a buffer, point the lexer at it, run the statement loop until EOF.
+- If no filename: fall back to the existing REPL.
+- Roughly 30 lines. Lexer/parser/evaluator are unchanged — they just consume bytes, they don't care where they came from.
+
+**2. "File extension" is convention, not magic.**
+Extensions like `.py` / `.c` aren't special to the OS. They're hints for humans and editors. Your language gets an extension the moment you decide on one (e.g. `.lang`) and configure editors to invoke your binary when they see it. The interpreter itself never looks at the filename.
+
+**3. Editor integration / run button.**
+Same pattern as the VS Code tasks.json in this project — configure an editor action that shells out to `./learning <filename>`. For the "global feel," copy the binary into `/usr/local/bin/` (on `$PATH`) so any terminal can run `learning program.lang`.
+
+**4. Shebang trick (UNIX only, makes the file self-executable).**
+If a `.lang` file's first line is `#!/usr/bin/env learning` and the file is marked executable (`chmod +x`), running `./program.lang` invokes the interpreter with the file as input. No wrapper needed. This is how Python/Ruby/Bash scripts "run themselves" — the OS reads the `#!` line and starts the listed program.
+
+**5. What's actually hard (to know for later).**
+At this point the "run a file" plumbing is done. What separates a toy from a real language isn't the file-loading step — it's the *features and ecosystem*: functions, types, stdlib, error messages with source locations, debugger, docs, performance work, package management, community. The interpreter becomes a small nucleus surrounded by years of surrounding work. But once Tier 4 + file loading are done, you've built the engine; the rest is growth.
+
 ---
 
 ## Key concepts covered so far
