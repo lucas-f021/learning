@@ -130,7 +130,7 @@ Tier 1 calculator is functionally complete. Possible next directions:
 
 ---
 
-## Tier 2 — Variables (in progress)
+## Tier 2 — Variables (complete)
 
 ### Scope decision
 - Multiple statements per line, `;` mandatory after every statement
@@ -183,23 +183,58 @@ Reverted `main` back to the real parse+eval REPL before committing.
 
 ---
 
-## What's next (Tier 2 pickup)
+### AST additions — complete
+- `NodeType` now: `NODE_INT, NODE_BINOP, NODE_IDENT, NODE_LET`
+- Two new arms in the `Node` union:
+  - `struct { char *name; } ident` — name lookup reference (field accessed as `n->uni.ident_name`)
+  - `struct { char *name; struct Node *value; } let` — name + RHS subtree pointer (note `struct Node *`, not `Node *`, to sidestep the self-reference gotcha)
 
-1. **AST additions:** add `NODE_IDENT` and `NODE_LET` to `NodeType`; extend the `Node` union with two new arms (ident carries a `char *name`; let carries `char *name` + `Node *value`).
+### Parser additions — complete
+- `parse_factor` grew a `TOK_IDENT` case — allocate NODE_IDENT, point name at the Token's `strndup`'d ident (shared — leaks per line, fine for now)
+- `parse_let` — advance past `let`, expect+save IDENT name, expect+advance `=`, `parse_expr` for RHS, expect+advance `;`, build NODE_LET
+- `parse_statement` — if curr is TOK_LET → delegate to parse_let; else parse_expr first, then check+advance the trailing SEMI (defensive: errors if SEMI missing)
+- Forward-declaration block at top of PARSER section grew to cover the two new functions
 
-2. **Parser additions:**
-   - `parse_factor` grows a `TOK_IDENT` case (structurally identical to the `TOK_INT` case, just stores a string). Simplest approach: point NODE_IDENT's name directly at the strndup'd memory from the Token. Leaks per line — fine for now.
-   - New function `parse_let`: advance past `let`, expect IDENT (save name), expect EQ, parse_expr for RHS, expect SEMI, build NODE_LET.
-   - New function `parse_statement`: if curr is TOK_LET → parse_let; else → parse_expr then consume SEMI.
-   - Forward-declaration block at top of parser section needs to grow.
+### Evaluator additions — complete
+- `eval` signature changed to `int eval(Node *n, HashMap *env)` — env threads through every recursive call
+- NODE_IDENT: `hm_get(env, name, &out)` — capture bool in `found`, error if not found, else return `out`
+- NODE_LET: recursively eval the value subtree into an int, `hm_insert(env, name, val)`, return 0 as placeholder
+- Binop recursions updated to pass `env` down
 
-3. **REPL loop change:** instead of `parse_expr` once per line, loop `parse_statement` until `p->curr.type == TOK_EOF`. Each statement gets `eval`'d.
+### REPL loop rewrite — complete
+- `HashMap *env = hm_create()` before the outer `while(1)` — session-long
+- Inner `while(p.curr.type != TOK_EOF)` loop: `parse_statement` → `eval` (stored result) → print only if the stmt isn't NODE_LET
+- `arena_reset(a)` once per line, after the statements loop exits (not per statement)
+- `hm_destroy(env)` + `arena_destroy(a)` only on Ctrl-D exit — never per line, never per statement
 
-4. **Environment wiring:** `HashMap *env` created once in `main` (before the REPL loop), destroyed on Ctrl-D. Threaded as a parameter into `eval`. NEW: `eval` signature becomes `int eval(Node *n, HashMap *env)`.
+**Verified end-to-end on:**
+- `let x = 5; x + 1;` → 6 (binding + use on same line)
+- `let y = x * 2; y;` → 10 (x persists across lines, new var bound, printed via bare-ident expr stmt)
+- `5 + 3;` → 8 (plain expression statements still work)
+- `let x = 5;` alone → no output (NODE_LET suppresses print)
+- `x;` alone → prints stored value (bare ident as expression statement)
 
-5. **Evaluator additions:**
-   - `NODE_IDENT`: `hm_get(env, name, &out)`; if not found → error ("undefined variable"); else return `out`.
-   - `NODE_LET`: recursively eval the value subtree, then `hm_insert(env, name, value)`. Decision: what should a let statement "return"? Probably 0, or just don't print let-statement results in the REPL (track which kind of node was evaluated and skip the `printf("%d\n", ...)` for lets).
+**Tier 2 is feature-complete.** Variables, let bindings, expression statements, session-persistent environment. All four node types (INT, BINOP, IDENT, LET) exercised through the full lex → parse → eval pipeline.
+
+---
+
+## What's next
+
+### Loose ends (optional cleanup)
+- Identifier name strings `strndup`'d in lexer leak every line (nothing frees them); not a runtime issue, but not clean. Could arena-copy in parse_factor and let the arena reset handle it — but then the hashmap's `strdup` would still copy it into malloc territory anyway, so the lexer-side leak persists until something frees it.
+- NODE_LET returning 0 is a placeholder; could use a "void statement" marker or rely on type-tag inspection (current approach).
+- Division by zero, overflow, and uninitialized-variable edge cases still unhandled.
+- `print_token` still unused (kept as scaffolding).
+
+### Tier 3 — Booleans + if/else (next)
+- New lexer tokens: `TOK_TRUE`, `TOK_FALSE`, `TOK_IF`, `TOK_ELSE`, `TOK_LT`/`TOK_GT`/`TOK_EQEQ`, `TOK_LBRACE`/`TOK_RBRACE`
+- AST: `NODE_BOOL`, `NODE_IF` (condition + then-branch + else-branch children), comparison ops added to BINOP
+- Evaluator: booleans as int (0/1) is fine for tier 3; `if` dispatches based on condition
+- Teaching payoff: control flow, branching, value vs statement distinction tightens
+
+### Tier 4 — Functions + closures (the main event)
+- First-class functions, calling conventions, environments as first-class values (pointer-to-env captured in closure)
+- The "environments are just pointers" moment — parent env chain enables lexical scoping
 
 ---
 

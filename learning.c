@@ -152,6 +152,11 @@ typedef struct Node {
             struct Node *left;
             struct Node *right;
         } binop;
+        char *ident_name;
+        struct {
+            char *name;
+            struct Node *value;
+        } let;
     } uni;
 } Node;
 
@@ -180,6 +185,8 @@ static Token advance(Parser *p) {
 Node *parse_expr(Parser *p);
 Node *parse_term(Parser *p);
 Node *parse_factor(Parser *p);
+Node *parse_let(Parser *p);
+Node *parse_statement(Parser *p);
 
 Node *parse_expr(Parser *p) {
     Node *left = parse_term(p);
@@ -250,8 +257,67 @@ Node *parse_factor(Parser *p) {
         }
         advance(p);
         return tmp;
+    } 
+    if(p->curr.type == TOK_IDENT) {
+        Node *new = arena_alloc(p->arena, sizeof(Node));
+        if(new == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
+        new->type = NODE_IDENT;
+        new->uni.ident_name = p->curr.value.ident;
+        advance(p);
+        return new;
     } else {
         fprintf(stderr, "unexpected token\n");
+        exit(1);
+    }
+}
+
+Node *parse_let(Parser *p) {
+    char *tmp;
+    advance(p);
+    if(p->curr.type == TOK_IDENT) {
+        tmp = p->curr.value.ident;
+    } else {
+        fprintf(stderr, "Expected identifier\n");
+        exit(1);
+    }
+    advance(p);
+    if(p->curr.type == TOK_EQ) {
+        advance(p);
+    } else {
+        fprintf(stderr, "Expected =\n");
+        exit(1);
+    }
+    Node *expr = parse_expr(p);
+    if(p->curr.type == TOK_SEMI) {
+        advance(p); } 
+        else {
+        fprintf(stderr, "Expected ;\n");
+        exit(1);
+    }
+    Node *new = arena_alloc(p->arena, sizeof(Node));
+    if(new == NULL) {
+        fprintf(stderr, "Arena alloc error\n");
+        exit(1);
+    }
+    new->type = NODE_LET;
+    new->uni.let.name = tmp;
+    new->uni.let.value = expr;
+    return new;
+}
+
+Node *parse_statement(Parser *p) {
+    if(p->curr.type == TOK_LET) {
+        return parse_let(p);
+    }
+    Node *new = parse_expr(p);
+    if(p->curr.type == TOK_SEMI) {
+        advance(p);
+        return new;
+    } else {
+        fprintf(stderr, "Expected ;\n");
         exit(1);
     }
 }
@@ -282,13 +348,28 @@ void print_ast(Node *n) {
 
 /* ===== EVALUATOR ===== */
 
-int eval(Node *n) {
+int eval(Node *n, HashMap *env) {
     if(n->type == NODE_INT) {
         return n->uni.int_value;
     }
+    if(n->type == NODE_IDENT) {
+        int out;
+        bool found = hm_get(env, n->uni.ident_name, &out);
+        if(found != true) {
+            fprintf(stderr, "Hashmap Failure\n");
+            exit(1);
+        } else {
+            return out;
+        }
+    }
+    if(n->type == NODE_LET) {
+        int val = eval(n->uni.let.value, env);
+        hm_insert(env, n->uni.let.name, val);
+        return 0;
+    }
     else {
-        int x = eval(n->uni.binop.left);
-        int y = eval(n->uni.binop.right);
+        int x = eval(n->uni.binop.left, env);
+        int y = eval(n->uni.binop.right, env);
         switch(n->uni.binop.op) {
             case OP_ADD: 
                 return x + y;
@@ -308,6 +389,7 @@ int main(void) {
     Parser p;
     Lexer l;
     Arena *a = arena_create(4096);
+    HashMap *env = hm_create();
     char x[128];
     while(1) {
         printf("Enter expression to compute: ");
@@ -315,6 +397,7 @@ int main(void) {
 
         if(res == NULL) {
             arena_destroy(a);
+            hm_destroy(env);
             break;
         } 
 
@@ -322,8 +405,15 @@ int main(void) {
 
         init_parser(&p, &l, a);
 
-        printf("%d\n", eval(parse_expr(&p)));
-        arena_reset(a);
+        while(p.curr.type != TOK_EOF) {
+            Node *tmp = parse_statement(&p);
+            int val = eval(tmp, env);
+            if(tmp->type != NODE_LET) {
+                printf("%d\n", val);
+
+            }
+        }
+            arena_reset(a);
     }
 
     return 0;
