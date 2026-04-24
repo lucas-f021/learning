@@ -12,6 +12,7 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - **Tier 2 — Variables** (complete): `let NAME = EXPR;`, identifiers, multi-statement lines, session environment
 - **Tier 3 — Booleans + if/else** (next): comparison ops, control flow
 - **Tier 4 — Functions + closures**: first-class functions, lexical scoping, captured environments
+- **Type system** (post-Tier-4, staged — see details below): `Value` tagged union, inferred literal types, sized numeric primitives + C-style casts
 - **Final step — File execution**: run `.lang` files instead of (or alongside) REPL
 
 ---
@@ -275,6 +276,62 @@ Reverted `main` back to the real parse+eval REPL before committing.
 ### Tier 4 — Functions + closures (the main event)
 - First-class functions, calling conventions, environments as first-class values (pointer-to-env captured in closure)
 - The "environments are just pointers" moment — parent env chain enables lexical scoping
+
+### Type system — Rust/Zig-lite primitives (staged, post-Tier-4)
+
+**The dream.** C-style defaults, Rust-style sized primitives with explicit casts:
+```
+let x = 1;             // default int (i32)
+let y = 3.14;          // default float (f64)
+let c = 'a';           // char (u8)
+let b = true;          // bool
+let small = (u8) 1;    // explicit narrow
+let half = (f16) 3.14; // explicit float width
+```
+
+**Target primitive types:** `u8 u16 u32 u64 i8 i16 i32 i64 f16 f32 f64 bool char`
+
+**Defaults (C-style):**
+- Integer literals → `i32` (no cast required, matches C's `int`)
+- Float literals → `f64`
+- Char literals → `u8`
+- `true` / `false` → `bool`
+- Mixed-type operations use **implicit promotion** (widen operands to the wider type, then op) — e.g. `(u8) 1 + 5` → `i32` holding 6
+
+**Why this is the right model for a teaching language:**
+- No cast clutter for the 95% case (`let x = 1;` just works)
+- Explicit widths available when needed
+- Promotion rules match C — predictable, familiar
+- Cast syntax `(TYPE) EXPR` is C-classic
+
+**Staging plan:**
+
+**Stage B — Generic Value tagged union (1–2 days):**
+- `Value` tagged union: tag + union with arms for `int64`, `double`, `bool`, `char` (just 4 types, no size variants yet)
+- `eval` returns `Value` instead of `int`; hashmap stores `Value`
+- Lexer extensions: float literals (digit-loop handling `.`), char literals (`'a'`), `true`/`false` keywords
+- Operators gain type-dispatch: promote to common type, then operate
+- `print_value(Value)` helper switches on tag — `%d`/`%f`/`%c`/`"true"|"false"`
+- Unlocks: `let x = 'a'; let y = 3.14; let z = true;` — three of the four dream features
+
+**Stage C — Sized numerics + cast operator (1–2 days):**
+- Expand `Value`'s tag enum to cover all 13 primitive types; storage stays compact (signed ints share an `int64_t`, unsigned share a `uint64_t`, floats share a `double` — tag tells you how to interpret)
+- Lexer: add tokens for type names (`TOK_U8`, `TOK_I32`, `TOK_F64`, ...) — lex as identifier, recognize as keyword (same trick as `let`)
+- **Parser — the interesting part:** cast syntax needs **two-token lookahead**. When `parse_factor` sees `(`, it has to decide between `(expr)` and `(type) expr`. Requires extending `Parser` with a second lookahead slot (e.g. `Token next` alongside `Token curr`), plus a `peek_ahead` helper. First time the parser needs >1 lookahead.
+- New node: `NODE_CAST` wrapping an expression + target type
+- Evaluator: cast logic — widening is safe, narrowing truncates (or errors — decide)
+- Unlocks: full dream — `let x = (u8) 1; let y = (f16) 3.14;`
+
+**Stage D — Static type checking (optional, days to weeks):**
+- A type-checking pass between parser and evaluator; catches `true + 5` at parse time instead of runtime
+- Type annotations on let: `let x: u16 = 5;`
+- Generic inference ("figure out `x`'s type from how it's used") — simpler languages use unification (Hindley-Milner is the canonical algorithm)
+- Probably beyond the natural stopping point for this project; noted for completeness
+
+**Why do types *after* Tier 4:**
+- Types are orthogonal to control flow and functions — retrofit later without rewriting either
+- Don't mix "what's a closure?" (hard) with "how do values interact?" (tedious) — one at a time
+- Tier 4's `Value`-as-function-pointer design will tell you exactly what the Value union needs to look like, so designing it post-Tier-4 avoids redesign
 
 ### Final step — make it a "real language" (file execution)
 The gap between a REPL toy and a file-runnable language is smaller than it looks. Do this last, after the language features are in place.
