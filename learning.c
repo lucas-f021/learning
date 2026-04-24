@@ -19,7 +19,16 @@ typedef enum {
     TOK_IDENT,
     TOK_LET,
     TOK_EQ,
-    TOK_SEMI
+    TOK_SEMI,
+    TOK_IF,
+    TOK_ELSE,
+    TOK_TRUE,
+    TOK_FALSE,
+    TOK_LT,
+    TOK_GT,
+    TOK_EQEQ,
+    TOK_LBRACE,
+    TOK_RBRACE
 } TokenType;
 
 typedef struct {
@@ -39,6 +48,20 @@ static Token casehelper(Lexer *l, TokenType type) {
     t.type = type;
     l->pos++;
     return t;
+}
+
+static Token casehelper2(Lexer *l, TokenType type) {
+    Token t;
+    t.type = type;
+    l->pos += 2;
+    return t;
+}
+
+static char view_next(Lexer *l) {
+    if (*l->pos == '\0') {
+        return '\0';
+    }
+    return *(l->pos + 1);
 }
 
 Token next_token(Lexer *l) {
@@ -64,11 +87,24 @@ Token next_token(Lexer *l) {
         case ')':
             return casehelper(l, TOK_RPAREN);
         
-        case '=':
-            return casehelper(l, TOK_EQ);
-
+        case '=': {
+            char cmp = view_next(l);
+            if(cmp == '=') {
+                return casehelper2(l, TOK_EQEQ);
+            } else {
+                return casehelper(l, TOK_EQ);
+            }
+        }
         case ';':
             return casehelper(l, TOK_SEMI);
+        case '<':
+            return casehelper(l, TOK_LT);
+        case '>':
+            return casehelper(l, TOK_GT);
+        case '{':
+            return casehelper(l, TOK_LBRACE);
+        case '}':
+            return casehelper(l, TOK_RBRACE);
 
         case '\0': {
             Token t;
@@ -91,12 +127,30 @@ Token next_token(Lexer *l) {
                 l->pos++;
             }
             size_t len = l->pos - tmp;
-            if(len == 3) {
-                if(strncmp(tmp, "let", 3) == 0) {
-                    Token t;
-                    t.type = TOK_LET;
-                    return t;
+            if(len == 3 && strncmp(tmp, "let", 3) == 0) {
+                Token t;
+                t.type = TOK_LET;
+                return t;
                 }
+            if(len == 2 && strncmp(tmp, "if", 2) == 0) {
+                Token t;
+                t.type = TOK_IF;
+                return t;
+            }
+            if(len == 4 && strncmp(tmp, "else", 4) == 0) {
+                Token t;
+                t.type = TOK_ELSE;
+                return t;
+            }
+            if(len == 4 && strncmp(tmp, "true", 4) == 0) {
+                Token t;
+                t.type = TOK_TRUE;
+                return t;
+            }
+            if(len == 5 && strncmp(tmp, "false", 5) == 0) {
+                Token t;
+                t.type = TOK_FALSE;
+                return t;
             }
             Token t;
             t.type = TOK_IDENT;
@@ -124,6 +178,15 @@ static void print_token(Token t) {
         case TOK_LET: printf("LET\n"); break;
         case TOK_EQ: printf("EQ\n"); break;
         case TOK_SEMI: printf("SEMI\n"); break;
+        case TOK_IF:     printf("IF\n"); break;
+        case TOK_ELSE:   printf("ELSE\n"); break;
+        case TOK_TRUE:   printf("TRUE\n"); break;
+        case TOK_FALSE:  printf("FALSE\n"); break;
+        case TOK_LT:     printf("LT\n"); break;
+        case TOK_GT:     printf("GT\n"); break;
+        case TOK_EQEQ:   printf("EQEQ\n"); break;
+        case TOK_LBRACE: printf("LBRACE\n"); break;
+        case TOK_RBRACE: printf("RBRACE\n"); break;
     }
 }
 
@@ -133,19 +196,27 @@ typedef enum {
     OP_ADD,
     OP_SUB,
     OP_MUL,
-    OP_DIV
+    OP_DIV,
+    OP_LT,
+    OP_GT,
+    OP_EQEQ
 } OpType;
 
 typedef enum {
     NODE_INT,
     NODE_BINOP,
     NODE_IDENT,
-    NODE_LET
+    NODE_LET,
+    NODE_BOOL,
+    NODE_IF,
+    NODE_BLOCK
 } NodeType;
 
 typedef struct Node {
+    struct Node *next;
     NodeType type;
     union {
+        int bool_val;
         int int_value;
         struct {
             OpType op;
@@ -157,6 +228,12 @@ typedef struct Node {
             char *name;
             struct Node *value;
         } let;
+        struct {
+            struct Node *cond;
+            struct Node *then_branch;
+            struct Node *else_branch;
+        } if_stmt;
+        struct Node *first;
     } uni;
 } Node;
 
@@ -187,6 +264,9 @@ Node *parse_term(Parser *p);
 Node *parse_factor(Parser *p);
 Node *parse_let(Parser *p);
 Node *parse_statement(Parser *p);
+Node *parse_comparison(Parser *p);
+Node *parse_block(Parser *p);
+Node parse_if(Parser *p);
 
 Node *parse_expr(Parser *p) {
     Node *left = parse_term(p);
@@ -399,7 +479,7 @@ int main(void) {
             arena_destroy(a);
             hm_destroy(env);
             break;
-        } 
+        }
 
         l.pos=x;
 

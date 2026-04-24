@@ -10,28 +10,30 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 ## Project roadmap
 - **Tier 1 — Calculator** (complete): integers, `+ - * /`, parens, whitespace, REPL
 - **Tier 2 — Variables** (complete): `let NAME = EXPR;`, identifiers, multi-statement lines, session environment
-- **Tier 3 — Booleans + if/else** (next): comparison ops, control flow
+- **Tier 3 — Booleans + if/else** (in progress — lexer + AST types done, parser/eval remaining): comparison ops, control flow
 - **Tier 4 — Functions + closures**: first-class functions, lexical scoping, captured environments
 - **Type system** (post-Tier-4, staged — see details below): `Value` tagged union, inferred literal types, sized numeric primitives + C-style casts
 - **Final step — File execution**: run `.lang` files instead of (or alongside) REPL
 
 ---
 
-## Current state snapshot (after Tier 2)
+## Current state snapshot (mid-Tier-3: lexer + AST types done, parser/eval pending)
 
 **Files:** `learning.c` (single-file interpreter), `arena.h`/`arena.c` (bump allocator for AST), `hash.h`/`hash.c` (string→int environment), `.gitignore`, `PROGRESS.md`.
 
 **Compile:** `gcc -Wall -Wextra learning.c arena.c hash.c -o learning`
 
-**`TokenType`:** `TOK_INT, TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_LPAREN, TOK_RPAREN, TOK_EOF, TOK_IDENT, TOK_LET, TOK_EQ, TOK_SEMI`
+**`TokenType`** (20 variants): Tier 1–2 tokens + `TOK_IF, TOK_ELSE, TOK_TRUE, TOK_FALSE, TOK_LT, TOK_GT, TOK_EQEQ, TOK_LBRACE, TOK_RBRACE`
 
 **`Token`:** tagged union, `type` + `{ int int_val; char *ident; } value`. `ident` is `strndup`'d by the lexer (leaks per line — known issue).
 
-**`Lexer`:** `char *pos` into source buffer. `next_token` skips whitespace, switches on current char, delegates single-char ops to `casehelper`, handles multi-digit ints via `isdigit` + `atoi`, handles identifiers via `isalpha`/`isalnum` + `strndup` + `let`-keyword check.
+**`Lexer`:** `char *pos` into source buffer. `next_token` skips whitespace, switches on current char, delegates single-char ops to `casehelper`. Multi-char `==` uses a new `view_next(l)` lookahead helper + `casehelper2` (advances 2 chars). Identifier branch recognizes keywords via length+strncmp: `let`, `if`, `else`, `true`, `false`.
 
-**`NodeType`:** `NODE_INT, NODE_BINOP, NODE_IDENT, NODE_LET`
+**`OpType`:** `OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_LT, OP_GT, OP_EQEQ` — last three are Tier 3 additions, not yet wired into eval.
 
-**`Node`:** tagged union, `type` + `uni` with arms for int_value, binop (op + left/right `struct Node *`), ident_name, and let (name + value subtree).
+**`NodeType`:** `NODE_INT, NODE_BINOP, NODE_IDENT, NODE_LET, NODE_BOOL, NODE_IF, NODE_BLOCK`
+
+**`Node`:** tagged union; top-level fields are `type` + `struct Node *next` (used for statement chains inside blocks — NULL elsewhere). `uni` has arms for int_value, bool_val, binop (op + left/right), ident_name, let (name + value subtree), if_stmt (cond + then_branch + else_branch — else nullable), and block (`first` pointing to the head of a `next`-linked statement chain).
 
 **`Parser`:** `{ Lexer *l; Token curr; Arena *arena; }`. Primed via `init_parser(p, lex, arena)` which calls `next_token` once. `advance` saves curr, refills via `next_token`, returns old.
 
@@ -54,6 +56,70 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - NODE_LET returns 0 as placeholder
 - Division by zero / overflow not handled
 - `print_token` unused (kept as debug scaffolding)
+
+---
+
+## Tier 3 — Booleans + if/else (in progress)
+
+### Design decisions (locked)
+- `if` is a **statement**, not an expression — doesn't produce a value
+- **Braces mandatory** around branches: `if (cond) { body }`
+- **Else is optional** — bare `if` allowed, NODE_IF's `else_branch` is nullable
+- **Bools treated as ints** (0/1) — no new Value type (deferred to post-Tier-4 type system)
+- **Comparison ops don't chain** — `a < b < c` will be a parse error (one comparison, no repeat)
+- **Comparison precedence** lower than arithmetic — `x + 1 > 3` parses as `(x+1) > 3`
+
+### Grammar additions
+```
+statement  → 'let' IDENT '=' comparison ';'
+           | 'if' '(' comparison ')' block ('else' block)?
+           | comparison ';'
+block      → '{' statement* '}'
+comparison → expr (('<' | '>' | '==') expr)?
+```
+
+(`comparison` replaces the callers that used to call `parse_expr` directly — `parse_let` RHS and expr-stmts.)
+
+### Lexer — complete
+- 9 new `TokenType`s (if/else/true/false/lt/gt/eqeq/lbrace/rbrace) added
+- `view_next(Lexer *l)` helper — peeks one char past `l->pos`, with EOF safety (returns `\0` if current is already null)
+- `casehelper2` — 2-char version of casehelper, advances pos by 2
+- `=` case: uses `view_next` to choose between TOK_EQ (single-char `casehelper`) and TOK_EQEQ (`casehelper2`)
+- Keyword recognition extended in the identifier branch: `if`, `else`, `true`, `false` checked alongside `let` via length + `strncmp` chain
+- `print_token` extended with 9 new cases
+- Verified on `"if (x == 5) { true } else { false }"` — all tokens produced in order, multi-char `==` correctly emits EQEQ
+
+### AST types — complete
+- `NodeType` grew `NODE_BOOL, NODE_IF, NODE_BLOCK`
+- `OpType` grew `OP_LT, OP_GT, OP_EQEQ` (comparisons reuse NODE_BINOP — no new node type)
+- `Node` gained top-level `struct Node *next` field for block statement chains (Option 1 representation — simplest, 8 bytes overhead per node)
+- New union arms:
+  - `int bool_val` for NODE_BOOL (0/1, treated as int for now)
+  - `struct { Node *cond, *then_branch, *else_branch; } if_stmt` — else_branch nullable
+  - `struct Node *first` for NODE_BLOCK — points at head of `next`-linked chain
+
+### What's next (Tier 3 pickup)
+
+1. **`parse_comparison`** — calls `parse_expr`, then optionally consumes one comparison operator (TOK_LT/TOK_GT/TOK_EQEQ) and another `parse_expr`, builds NODE_BINOP with the right OpType. Single comparison only, no chaining. Then: find every caller of `parse_expr` that should accept comparisons (parse_let RHS, parse_statement expr-stmt path) and swap to `parse_comparison`. `parse_expr` itself stays unchanged.
+
+2. **`parse_block`** — expects `{`, loops `parse_statement` while curr isn't `}` (guard against EOF), chains results via `next` using head/tail locals, expects `}`. Returns NODE_BLOCK with `first = head`.
+
+3. **`parse_if`** — advance past `if`, expect `(`, `parse_comparison` for cond, expect `)`, `parse_block` for then, optionally if next is `else` advance and `parse_block` for else (else nullable → else_branch stays NULL if absent). Build NODE_IF. No trailing `;` — if is brace-delimited.
+
+4. **`parse_statement` wire-up:** add a TOK_IF branch at the top that delegates to `parse_if`. Update the expr-stmt path to use `parse_comparison` instead of `parse_expr`.
+
+5. **`parse_factor` extension:** add cases for TOK_TRUE → NODE_BOOL with `bool_val = 1`, TOK_FALSE → NODE_BOOL with `bool_val = 0`. Both advance + return.
+
+6. **Forward declarations** — add `parse_comparison`, `parse_block`, `parse_if` to the top-of-parser block.
+
+7. **Evaluator additions:**
+   - NODE_BOOL → return `bool_val`
+   - NODE_IF → eval cond; if non-zero, eval then_branch; else if else_branch != NULL, eval it; return 0 (statement, no meaningful value)
+   - NODE_BLOCK → walk the chain from `first`, eval each via `next`, return the last value (or 0 if empty)
+   - BINOP switch gains OP_LT / OP_GT / OP_EQEQ → return 1 or 0 from the comparison
+   - Also update `print_ast`'s BINOP switch for the 3 new OpTypes (currently compiler-warning about unhandled switch cases)
+
+8. **Main loop:** the existing structure (`parse_statement` loop, print if not NODE_LET) mostly works. Probably want to also suppress printing for NODE_IF and NODE_BLOCK — they're statements that don't produce useful values either.
 
 ---
 
