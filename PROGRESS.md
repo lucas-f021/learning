@@ -7,16 +7,56 @@
 source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator]  →  value
 ```
 
-## Tier 1 scope (calculator)
-- Integers only (multi-digit, no floats)
-- Operators: + - * /
-- Parentheses supported
-- Whitespace ignored
-- REPL (read-eval-print loop)
+## Project roadmap
+- **Tier 1 — Calculator** (complete): integers, `+ - * /`, parens, whitespace, REPL
+- **Tier 2 — Variables** (complete): `let NAME = EXPR;`, identifiers, multi-statement lines, session environment
+- **Tier 3 — Booleans + if/else** (next): comparison ops, control flow
+- **Tier 4 — Functions + closures**: first-class functions, lexical scoping, captured environments
+- **Final step — File execution**: run `.lang` files instead of (or alongside) REPL
 
 ---
 
-## What's done in learning.c
+## Current state snapshot (after Tier 2)
+
+**Files:** `learning.c` (single-file interpreter), `arena.h`/`arena.c` (bump allocator for AST), `hash.h`/`hash.c` (string→int environment), `.gitignore`, `PROGRESS.md`.
+
+**Compile:** `gcc -Wall -Wextra learning.c arena.c hash.c -o learning`
+
+**`TokenType`:** `TOK_INT, TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_LPAREN, TOK_RPAREN, TOK_EOF, TOK_IDENT, TOK_LET, TOK_EQ, TOK_SEMI`
+
+**`Token`:** tagged union, `type` + `{ int int_val; char *ident; } value`. `ident` is `strndup`'d by the lexer (leaks per line — known issue).
+
+**`Lexer`:** `char *pos` into source buffer. `next_token` skips whitespace, switches on current char, delegates single-char ops to `casehelper`, handles multi-digit ints via `isdigit` + `atoi`, handles identifiers via `isalpha`/`isalnum` + `strndup` + `let`-keyword check.
+
+**`NodeType`:** `NODE_INT, NODE_BINOP, NODE_IDENT, NODE_LET`
+
+**`Node`:** tagged union, `type` + `uni` with arms for int_value, binop (op + left/right `struct Node *`), ident_name, and let (name + value subtree).
+
+**`Parser`:** `{ Lexer *l; Token curr; Arena *arena; }`. Primed via `init_parser(p, lex, arena)` which calls `next_token` once. `advance` saves curr, refills via `next_token`, returns old.
+
+**Parse functions** (all arena-allocate their nodes, all NULL-check):
+- `parse_statement` → dispatches to parse_let or parse_expr+SEMI
+- `parse_let` → `let IDENT = EXPR ;` → NODE_LET
+- `parse_expr` / `parse_term` / `parse_factor` → recursive-descent left-assoc over `+-` / `*/` / atoms
+- `parse_factor` handles INT, IDENT (NODE_IDENT), `(expr)` with verified `)` close
+
+**`eval(Node *n, HashMap *env)` → int:** switches on node type. NODE_INT returns payload, NODE_IDENT does `hm_get` (errors if not found), NODE_LET recursively evals value then `hm_insert`, NODE_BINOP recursively evals both sides + applies op.
+
+**`main`:** creates 4KB arena + session HashMap once, REPL loop reads line, inits parser, loops `parse_statement` + `eval` over the line's statements, prints result only if node wasn't NODE_LET, resets arena per line. On Ctrl-D: destroys both arena and env.
+
+**Verified on:**
+- `1+2` → 3; `3*4+5` → 17; `(1+2)*3` → 9 (Tier 1)
+- `let x = 5; x + 1;` → 6; `let y = x * 2; y;` → 10 (Tier 2 variables, cross-line persistence)
+
+**Known debt:**
+- `strndup`'d identifier names leak per line (lexer side)
+- NODE_LET returns 0 as placeholder
+- Division by zero / overflow not handled
+- `print_token` unused (kept as debug scaffolding)
+
+---
+
+## History — how we got here (each section reflects state at time of build; see snapshot above for current truth)
 
 ### Includes
 - stdio.h, stdlib.h, string.h, ctype.h
@@ -70,9 +110,9 @@ TOK_INT, TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_LPAREN, TOK_RPAREN, TOK_E
 - Stores `lex` into `p->l`
 - Primes `p->curr` by calling `next_token(lex)` once
 
-**`peek(Parser *p)` / `advance(Parser *p)` — complete:**
-- `peek` returns `p->curr` without consuming
-- `advance` saves current, refills `p->curr` via `next_token(p->l)`, returns the saved old token
+**`advance(Parser *p)` — complete:**
+- Saves current, refills `p->curr` via `next_token(p->l)`, returns the saved old token
+- (A `peek` helper was written but never used — parse functions read `p->curr` directly, so it was deleted.)
 
 **Recursive-descent functions — complete:**
 - Forward declarations used so the three functions can call each other
