@@ -266,7 +266,7 @@ Node *parse_let(Parser *p);
 Node *parse_statement(Parser *p);
 Node *parse_comparison(Parser *p);
 Node *parse_block(Parser *p);
-Node parse_if(Parser *p);
+Node *parse_if(Parser *p);
 
 Node *parse_expr(Parser *p) {
     Node *left = parse_term(p);
@@ -283,6 +283,7 @@ Node *parse_expr(Parser *p) {
             new->uni.binop.op = OP_SUB;
         }
         new->uni.binop.left = left;
+        new->next = NULL;
         advance(p);
 
         Node *right = parse_term(p);
@@ -311,12 +312,38 @@ Node *parse_term(Parser *p) {
 
         Node *right = parse_factor(p);
         new->uni.binop.right = right;
+        new->next = NULL;
         left = new;
     }
     return left;
 }
 
 Node *parse_factor(Parser *p) {
+    if(p->curr.type == TOK_MINUS) {
+        advance(p);
+        Node *local = parse_factor(p);
+        Node *syn_zero = arena_alloc(p->arena, sizeof(Node));
+        if(syn_zero == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
+        syn_zero->type = NODE_INT;
+        syn_zero->uni.int_value = 0;
+        syn_zero->next = NULL;  
+    
+        Node *binop_wrapper = arena_alloc(p->arena, sizeof(Node));
+        if(binop_wrapper == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
+        binop_wrapper->type = NODE_BINOP;
+        binop_wrapper->uni.binop.op = OP_SUB;
+        binop_wrapper->uni.binop.left = syn_zero;
+        binop_wrapper->uni.binop.right = local;
+        binop_wrapper->next = NULL;
+        return binop_wrapper;
+    }
+
     if(p->curr.type == TOK_INT) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
         if(new == NULL) {
@@ -325,6 +352,7 @@ Node *parse_factor(Parser *p) {
         }
         new->type = NODE_INT;
         new->uni.int_value = p->curr.value.int_val;
+        new->next = NULL;
         advance(p);
         return new;
     }
@@ -336,6 +364,7 @@ Node *parse_factor(Parser *p) {
             exit(1);
         }
         advance(p);
+        tmp->next = NULL;
         return tmp;
     } 
     if(p->curr.type == TOK_IDENT) {
@@ -346,11 +375,32 @@ Node *parse_factor(Parser *p) {
         }
         new->type = NODE_IDENT;
         new->uni.ident_name = p->curr.value.ident;
+        new->next = NULL;
         advance(p);
         return new;
     } else {
         fprintf(stderr, "unexpected token\n");
         exit(1);
+    }
+    if(p->curr.type == TOK_TRUE) {
+        Node *new = arena_alloc(p->arena, sizeof(Node));
+        if(new == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
+        new->type = NODE_BOOL;
+        new->uni.bool_val = 1;
+        new->next = NULL;
+    }
+    if(p->curr.type == TOK_FALSE) {
+        Node *new = arena_alloc(p->arena, sizeof(Node));
+        if(new == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
+        new->type = NODE_BOOL;
+        new->uni.bool_val = 0;
+        new->next = NULL;
     }
 }
 
@@ -370,7 +420,7 @@ Node *parse_let(Parser *p) {
         fprintf(stderr, "Expected =\n");
         exit(1);
     }
-    Node *expr = parse_expr(p);
+    Node *expr = parse_comparison(p);
     if(p->curr.type == TOK_SEMI) {
         advance(p); } 
         else {
@@ -385,14 +435,18 @@ Node *parse_let(Parser *p) {
     new->type = NODE_LET;
     new->uni.let.name = tmp;
     new->uni.let.value = expr;
+    new->next = NULL;
     return new;
 }
 
 Node *parse_statement(Parser *p) {
+    if(p->curr.type == TOK_IF) {
+        return parse_if(p);
+    }
     if(p->curr.type == TOK_LET) {
         return parse_let(p);
     }
-    Node *new = parse_expr(p);
+    Node *new = parse_comparison(p);
     if(p->curr.type == TOK_SEMI) {
         advance(p);
         return new;
@@ -400,6 +454,104 @@ Node *parse_statement(Parser *p) {
         fprintf(stderr, "Expected ;\n");
         exit(1);
     }
+}
+
+Node *parse_comparison(Parser *p) {
+    Node *tmp = parse_expr(p);
+    if(p->curr.type == TOK_LT || p->curr.type == TOK_GT || p->curr.type == TOK_EQEQ) {
+        Node *new = arena_alloc(p->arena, sizeof(Node));
+        if(new == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
+        new->type = NODE_BINOP;
+        if(p->curr.type == TOK_LT) {
+            new->uni.binop.op = OP_LT;
+        }
+        if(p->curr.type == TOK_GT) {
+            new->uni.binop.op = OP_GT;
+        }
+        if(p->curr.type == TOK_EQEQ) {
+            new->uni.binop.op = OP_EQEQ;
+        }
+        new->uni.binop.left = tmp;
+        advance(p);
+        new->uni.binop.right = parse_expr(p);
+        new->next = NULL;
+        return new;
+
+    } else {
+        return tmp;
+    }
+}
+
+Node *parse_block(Parser *p) {
+    if(p->curr.type != TOK_LBRACE) {
+        fprintf(stderr, "Expected a {");
+        exit(1);
+    }
+    advance(p);
+    Node *head = NULL;
+    Node *tail = NULL;
+    while(p->curr.type != TOK_RBRACE) {
+        if(p->curr.type == TOK_EOF) {
+            fprintf(stderr, "EOF hit before }");
+            exit(1);
+        }
+        Node *s = parse_statement(p);
+        if(head == NULL) {
+            head = s;
+            tail = s;
+        } else{
+            tail->next = s;
+            tail = s;
+        }
+    }
+    advance(p);
+    Node *new = arena_alloc(p->arena, sizeof(Node));
+    if(new == NULL) {
+        fprintf(stderr, "Arena alloc error\n");
+        exit(1);
+    }
+    new->type = NODE_BLOCK;
+    new->uni.first = head;
+    new->next = NULL;
+    return new;
+}
+
+Node *parse_if(Parser *p) {
+    advance(p);
+    if(p->curr.type != TOK_LPAREN) {
+        fprintf(stderr, "Expected (");
+        exit (1);
+    } else {
+        advance(p);
+    }
+    Node *cond = parse_comparison(p);
+    if(p->curr.type != TOK_RPAREN) {
+        fprintf(stderr, "Expected )");
+        exit(1);
+    } else{
+        advance(p);
+    }
+    Node *then_branch = parse_block(p);
+    Node *else_branch = NULL;
+    if(p->curr.type == TOK_ELSE) {
+        advance(p);
+        else_branch = parse_block(p);
+    }
+    Node *new = arena_alloc(p->arena, sizeof(Node));
+    if(new == NULL) {
+        fprintf(stderr, "Arena alloc error\n");
+        exit(1);
+    }
+
+    new->type = NODE_IF;
+    new->uni.if_stmt.cond = cond;
+    new->uni.if_stmt.then_branch = then_branch;
+    new->uni.if_stmt.else_branch = else_branch;
+    new->next = NULL;
+    return new;
 }
 
 void print_ast(Node *n) {
@@ -421,6 +573,15 @@ void print_ast(Node *n) {
             case OP_DIV:
                 printf("/");
                 break;
+            case OP_LT:
+                printf("<");
+                break;
+            case OP_GT:
+                printf(">");
+                break;
+            case OP_EQEQ:
+                printf("==");
+                break;
         }
         print_ast(n->uni.binop.right);
     }
@@ -429,38 +590,59 @@ void print_ast(Node *n) {
 /* ===== EVALUATOR ===== */
 
 int eval(Node *n, HashMap *env) {
-    if(n->type == NODE_INT) {
+    if (n->type == NODE_INT) {
         return n->uni.int_value;
     }
-    if(n->type == NODE_IDENT) {
+    if (n->type == NODE_BOOL) {
+        return n->uni.bool_val;
+    }
+    if (n->type == NODE_IDENT) {
         int out;
         bool found = hm_get(env, n->uni.ident_name, &out);
-        if(found != true) {
-            fprintf(stderr, "Hashmap Failure\n");
+        if (!found) {
+            fprintf(stderr, "Undefined variable: %s\n", n->uni.ident_name);
             exit(1);
-        } else {
-            return out;
         }
+        return out;
     }
-    if(n->type == NODE_LET) {
+    if (n->type == NODE_LET) {
         int val = eval(n->uni.let.value, env);
         hm_insert(env, n->uni.let.name, val);
         return 0;
     }
-    else {
+    if (n->type == NODE_IF) {
+        int cond = eval(n->uni.if_stmt.cond, env);
+        if (cond != 0) {
+            eval(n->uni.if_stmt.then_branch, env);
+        } else if (n->uni.if_stmt.else_branch != NULL) {
+            eval(n->uni.if_stmt.else_branch, env);
+        }
+        return 0;
+    }
+    if (n->type == NODE_BLOCK) {
+           Node *s = n->uni.first;
+           int last = 0;
+           while(s != NULL) {
+             last = eval(s, env);
+             s = s->next;
+           }
+           return last;
+}
+    if (n->type == NODE_BINOP) {
         int x = eval(n->uni.binop.left, env);
         int y = eval(n->uni.binop.right, env);
-        switch(n->uni.binop.op) {
-            case OP_ADD: 
-                return x + y;
-            case OP_SUB:
-                return x - y;
-            case OP_MUL:
-                return x * y;
-            case OP_DIV:
-                return x / y;
+        switch (n->uni.binop.op) {
+            case OP_ADD: return x + y;
+            case OP_SUB: return x - y;
+            case OP_MUL: return x * y;
+            case OP_DIV: return x / y;
+            case OP_LT: return x < y;
+            case OP_GT: return x > y;
+            case OP_EQEQ: return x == y;
         }
     }
+    fprintf(stderr, "eval: unknown node type\n");
+    exit(1);
 }
 
 /* ===== MAIN ===== */
@@ -488,7 +670,7 @@ int main(void) {
         while(p.curr.type != TOK_EOF) {
             Node *tmp = parse_statement(&p);
             int val = eval(tmp, env);
-            if(tmp->type != NODE_LET) {
+            if(tmp->type != NODE_LET && tmp->type != NODE_IF && tmp->type != NODE_BLOCK  ) {
                 printf("%d\n", val);
 
             }
