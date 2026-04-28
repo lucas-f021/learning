@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tree-Walking Interpreter Visualizer</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header id="header">
+    <h1>Tree-Walking Interpreter Visualizer · Tier 1</h1>
+    <div id="input-row">
+      <label for="expr-input">Expression:</label>
+      <input type="text" id="expr-input" value="1 + 2 * (3 - 4)" placeholder="e.g. (1 + 2) * 3">
+      <button id="run-btn">Run</button>
+      <span id="error-display"></span>
+    </div>
+  </header>
+
+  <main id="main">
+    <aside id="left-panel">
+      <h3>Source</h3>
+      <div id="source-text"></div>
+
+      <h3>Mode</h3>
+      <div id="mode-display">Parse</div>
+
+      <h3>Result</h3>
+      <div id="result-display">—</div>
+
+      <h3>Legend</h3>
+      <div class="legend">
+        <div><span class="dot int"></span>INT — leaf carrying a number</div>
+        <div><span class="dot binop"></span>BINOP — operator with left/right children</div>
+      </div>
+
+      <h3>Tips</h3>
+      <ul class="tips">
+        <li>Drag to rotate, scroll to zoom.</li>
+        <li>"Step ⏭" advances one parser action at a time.</li>
+        <li>After parsing, "→ Eval Mode" walks the tree.</li>
+      </ul>
+    </aside>
+
+    <section id="canvas-container">
+      <canvas id="canvas"></canvas>
+      <div id="label-container"></div>
+    </section>
+
+    <aside id="right-panel">
+      <h3>Call Stack</h3>
+      <div class="hint">Newest call on top. Watch it grow with each recursive call, shrink on return.</div>
+      <div id="stack-container"></div>
+    </aside>
+  </main>
+
+  <footer id="controls">
+    <button id="step-back-btn">⏮ Step Back</button>
+    <button id="play-pause-btn">▶ Play</button>
+    <button id="step-fwd-btn">Step ⏭</button>
+    <label>Speed
+      <input type="range" id="speed-slider" min="100" max="2000" value="600">
+    </label>
+    <button id="restart-btn">↻ Restart</button>
+    <button id="eval-mode-btn" disabled>→ Eval Mode</button>
+    <span id="progress-display"></span>
+  </footer>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
