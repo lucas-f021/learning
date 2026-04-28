@@ -60,7 +60,7 @@ static uint64_t hashfnv1a(const char *key) { // fnv1a hashing algo
     return hash;
 }
 
-void hm_insert(HashMap *hm, const char *key, int value) {
+void hm_insert(HashMap *hm, const char *key, Value value) {
     if ((hm->count + 1) * 10 >= hm->capacity * 7) {
         hm_resize(hm, hm->capacity * 2);
     }
@@ -86,7 +86,7 @@ void hm_insert(HashMap *hm, const char *key, int value) {
     }
 }
 
-bool hm_get(const HashMap *hm, const char *key, int *out) {
+bool hm_get(const HashMap *hm, const char *key, Value *out) {
     uint64_t home_index = hashfnv1a(key) % hm->capacity; // hash % capacity to get valid index
     for(size_t i = 0; i < hm->capacity; i ++) { // walk thru 0 to capacity
         size_t slot = (home_index + i) & (hm->capacity - 1); 

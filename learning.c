@@ -4,6 +4,9 @@
 #include <ctype.h>
 #include "arena.h"
 #include "hash.h"
+#include "value.h"
+
+/* ===== VALUES ===== */
 
 /* ===== LEXER ===== */
 
@@ -28,7 +31,10 @@ typedef enum {
     TOK_GT,
     TOK_EQEQ,
     TOK_LBRACE,
-    TOK_RBRACE
+    TOK_RBRACE,
+    TOK_FN,
+    TOK_COMMA,
+    TOK_RETURN
 } TokenType;
 
 typedef struct {
@@ -105,7 +111,8 @@ Token next_token(Lexer *l) {
             return casehelper(l, TOK_LBRACE);
         case '}':
             return casehelper(l, TOK_RBRACE);
-
+        case ',':
+            return casehelper(l, TOK_COMMA);
         case '\0': {
             Token t;
             t.type = TOK_EOF;
@@ -152,6 +159,16 @@ Token next_token(Lexer *l) {
                 t.type = TOK_FALSE;
                 return t;
             }
+            if(len == 2 && strncmp(tmp, "fn", 2) == 0) {
+                Token t;
+                t.type = TOK_FN;
+                return t;
+            }
+            if(len == 6 && strncmp(tmp, "return", 6) == 0) {
+                Token t;
+                t.type = TOK_RETURN;
+                return t;
+            }
             Token t;
             t.type = TOK_IDENT;
             t.value.ident = strndup(tmp, len);
@@ -187,6 +204,9 @@ static void print_token(Token t) {
         case TOK_EQEQ:   printf("EQEQ\n"); break;
         case TOK_LBRACE: printf("LBRACE\n"); break;
         case TOK_RBRACE: printf("RBRACE\n"); break;
+        case TOK_FN: printf("FN\n"); break;
+        case TOK_COMMA: printf("COMMA\n"); break;
+        case TOK_RETURN: printf("RETURN\n"); break;
     }
 }
 
@@ -209,8 +229,16 @@ typedef enum {
     NODE_LET,
     NODE_BOOL,
     NODE_IF,
-    NODE_BLOCK
+    NODE_BLOCK,
+    NODE_FN_LITERAL,
+    NODE_CALL,
+    NODE_RETURN
 } NodeType;
+
+typedef struct ParamList {
+    char *name;
+    struct ParamList *next;
+} ParamList;
 
 typedef struct Node {
     struct Node *next;
@@ -234,6 +262,16 @@ typedef struct Node {
             struct Node *else_branch;
         } if_stmt;
         struct Node *first;
+        struct {
+            ParamList *params;
+            size_t param_count;
+            struct Node *body;
+        } fn_literal;
+        struct {
+            struct Node *fn_expr;
+            struct Node *first_arg;
+        } fn_call;
+        struct Node *value;
     } uni;
 } Node;
 
@@ -590,18 +628,24 @@ void print_ast(Node *n) {
         print_ast(n->uni.binop.right);
     }
 }
-
 /* ===== EVALUATOR ===== */
 
-int eval(Node *n, HashMap *env) {
+static Value make_int(int n) {
+    Value val;
+    val.type = VAL_INT;
+    val.uni.int_val = n;
+    return val;
+}
+
+Value eval(Node *n, HashMap *env) {
     if (n->type == NODE_INT) {
-        return n->uni.int_value;
+        return make_int(n->uni.int_value);
     }
     if (n->type == NODE_BOOL) {
-        return n->uni.bool_val;
+        return make_int(n->uni.bool_val);
     }
     if (n->type == NODE_IDENT) {
-        int out;
+        Value out;
         bool found = hm_get(env, n->uni.ident_name, &out);
         if (!found) {
             fprintf(stderr, "Undefined variable: %s\n", n->uni.ident_name);
@@ -610,22 +654,22 @@ int eval(Node *n, HashMap *env) {
         return out;
     }
     if (n->type == NODE_LET) {
-        int val = eval(n->uni.let.value, env);
+        Value val = eval(n->uni.let.value, env);
         hm_insert(env, n->uni.let.name, val);
-        return 0;
+        return make_int(0);
     }
     if (n->type == NODE_IF) {
-        int cond = eval(n->uni.if_stmt.cond, env);
-        if (cond != 0) {
+        Value cond = eval(n->uni.if_stmt.cond, env);
+        if (cond.uni.int_val != 0) { // check for != val int 
             eval(n->uni.if_stmt.then_branch, env);
         } else if (n->uni.if_stmt.else_branch != NULL) {
             eval(n->uni.if_stmt.else_branch, env);
         }
-        return 0;
+        return make_int(0);
     }
     if (n->type == NODE_BLOCK) {
            Node *s = n->uni.first;
-           int last = 0;
+           Value last = make_int(0);
            while(s != NULL) {
              last = eval(s, env);
              s = s->next;
@@ -633,16 +677,16 @@ int eval(Node *n, HashMap *env) {
            return last;
 }
     if (n->type == NODE_BINOP) {
-        int x = eval(n->uni.binop.left, env);
-        int y = eval(n->uni.binop.right, env);
+        int x = eval(n->uni.binop.left, env).uni.int_val;
+        int y = eval(n->uni.binop.right, env).uni.int_val;
         switch (n->uni.binop.op) {
-            case OP_ADD: return x + y;
-            case OP_SUB: return x - y;
-            case OP_MUL: return x * y;
-            case OP_DIV: return x / y;
-            case OP_LT: return x < y;
-            case OP_GT: return x > y;
-            case OP_EQEQ: return x == y;
+            case OP_ADD: return make_int(x + y);
+            case OP_SUB: return make_int(x - y);
+            case OP_MUL: return make_int(x * y);
+            case OP_DIV: return make_int(x / y);
+            case OP_LT: return make_int(x < y);
+            case OP_GT: return make_int(x > y);
+            case OP_EQEQ: return make_int(x == y);
         }
     }
     fprintf(stderr, "eval: unknown node type\n");
@@ -673,9 +717,9 @@ int main(void) {
 
         while(p.curr.type != TOK_EOF) {
             Node *tmp = parse_statement(&p);
-            int val = eval(tmp, env);
+            Value val = eval(tmp, env);
             if(tmp->type != NODE_LET && tmp->type != NODE_IF && tmp->type != NODE_BLOCK  ) {
-                printf("%d\n", val);
+                printf("%d\n", val.uni.int_val);
 
             }
         }

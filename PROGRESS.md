@@ -11,19 +11,19 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - **Tier 1 — Calculator** (complete): integers, `+ - * /`, parens, whitespace, REPL
 - **Tier 2 — Variables** (complete): `let NAME = EXPR;`, identifiers, multi-statement lines, session environment
 - **Tier 3 — Booleans + if/else** (complete): comparison ops (`<`, `>`, `==`), if/else with optional else, braced blocks, unary minus bonus
-- **Tier 4 — Functions + closures**: first-class functions, lexical scoping, captured environments
+- **Tier 4 — Functions + closures** (in progress — Value migration done, env-chain done, parser/eval for `fn`/call/return remaining): first-class functions, lexical scoping, captured environments
 - **Type system** (post-Tier-4, staged — see details below): `Value` tagged union, inferred literal types, sized numeric primitives + C-style casts
 - **Final step — File execution**: run `.lang` files instead of (or alongside) REPL
 
 ---
 
-## Current state snapshot (after Tier 3)
+## Current state snapshot (mid-Tier-4: Value migration + env chain done; parser/eval for fn/call/return pending)
 
-**Files:** `learning.c` (single-file interpreter), `arena.h`/`arena.c` (bump allocator for AST), `hash.h`/`hash.c` (string→int environment), `.gitignore`, `PROGRESS.md`.
+**Files:** `learning.c` (interpreter), `arena.h`/`arena.c` (AST allocator), `hash.h`/`hash.c` (string→Value map), `value.h` (Value tagged union), `env.h`/`env.c` (Environment chain), `.gitignore`, `PROGRESS.md`.
 
-**Compile:** `gcc -Wall -Wextra learning.c arena.c hash.c -o learning`
+**Compile:** `gcc -Wall -Wextra learning.c arena.c hash.c env.c -o learning`
 
-**`TokenType`** (20 variants): all of `+ - * / ( ) = ;` plus `TOK_INT, TOK_IDENT, TOK_LET, TOK_EOF`, plus Tier 3 `TOK_IF, TOK_ELSE, TOK_TRUE, TOK_FALSE, TOK_LT, TOK_GT, TOK_EQEQ, TOK_LBRACE, TOK_RBRACE`.
+**`TokenType`** (23 variants): all Tier 1–3 tokens + Tier 4 additions `TOK_FN, TOK_COMMA, TOK_RETURN`.
 
 **`Token`:** tagged union, `type` + `{ int int_val; char *ident; } value`. `ident` is `strndup`'d by the lexer (leaks per line — known issue).
 
@@ -31,9 +31,22 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 
 **`OpType`:** `OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_LT, OP_GT, OP_EQEQ`
 
-**`NodeType`:** `NODE_INT, NODE_BINOP, NODE_IDENT, NODE_LET, NODE_BOOL, NODE_IF, NODE_BLOCK`
+**`NodeType`:** Tier 1–3 nodes + Tier 4: `NODE_FN_LITERAL, NODE_CALL, NODE_RETURN`
 
-**`Node`:** tagged union; top-level fields are `type` + `struct Node *next` (used for statement chains inside blocks — NULL elsewhere, defensively initialized at every alloc site). `uni` has arms for int_value, bool_val, binop (op + left/right), ident_name, let (name + value subtree), if_stmt (cond + then_branch + else_branch — else nullable), and block (`first` pointing to the head of a `next`-linked statement chain).
+**`Value`** (in `value.h`): tagged union, `ValueType type` + `uni { int int_val; struct { ParamList *params; struct Node *body; struct Environment *captured_env; } function; }`. Forward-declares `struct ParamList`, `struct Node`, `struct Environment` so it stays decoupled. `make_int(int)` helper builds a VAL_INT.
+
+**`Environment`** (in `env.h`/`env.c`): linked-chain heap-allocated wrapper around HashMap. Fields: `HashMap *vars; struct Environment *parent;`. API:
+- `env_create(parent)` — malloc, hm_create, set parent (NULL for global)
+- `env_destroy(env)` — NULL no-op, hm_destroy + free; parent left alone (shared)
+- `env_get(env, key, *out)` — try local hm_get; if false, recursively try parent; return false if no parent
+- `env_set(env, key, value)` — always sets locally (`let` shadows, never mutates outer scope)
+
+**`ParamList`** (in `learning.c`): `typedef struct ParamList { char *name; struct ParamList *next; } ParamList;` — linked list of identifier names for fn parameters.
+
+**`Node`:** tagged union; top-level fields are `type` + `struct Node *next` (used for statement chains inside blocks AND argument chains in calls — NULL elsewhere). `uni` has Tier 1–3 arms (int_value, bool_val, binop, ident_name, let, if_stmt, first for blocks) plus Tier 4 arms:
+- `struct { ParamList *params; size_t param_count; struct Node *body; } fn_literal` — for NODE_FN_LITERAL
+- `struct { struct Node *fn_expr; struct Node *first_arg; } fn_call` — for NODE_CALL (args chained via `next`)
+- `struct Node *value` (bare top-level union member) — for NODE_RETURN's payload expression
 
 **`Parser`:** `{ Lexer *l; Token curr; Arena *arena; }`. Primed via `init_parser(p, lex, arena)` which calls `next_token` once. `advance` saves curr, refills via `next_token`, returns old.
 
@@ -46,9 +59,9 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - `parse_expr` / `parse_term` / `parse_factor` → recursive-descent left-assoc over `+-` / `*/` / atoms
 - `parse_factor` handles INT, IDENT, TRUE, FALSE, `(expr)` with verified `)` close, **and unary minus** (`-EXPR` → synthesized `0 - EXPR` BINOP)
 
-**`eval(Node *n, HashMap *env)` → int:** flat sequence of `if (n->type == X) { ... return; }` blocks for each node type, with an "unknown node type" exit at the end. NODE_INT/BOOL return their payload, NODE_IDENT does `hm_get` (errors if undefined), NODE_LET evals value then `hm_insert` and returns 0, NODE_IF evals cond and dispatches to the right branch (no return value, returns 0), NODE_BLOCK walks the `next` chain from `first` evaluating each, returns the last value (0 if empty), NODE_BINOP evals both sides and switches on op (arithmetic + comparisons all return ints — comparisons are 0/1).
+**`eval(Node *n, HashMap *env)` → Value:** flat sequence of `if (n->type == X) { ... return; }` blocks for each node type. Returns Value (was int). NODE_INT/BOOL build via `make_int`. NODE_IDENT does `hm_get` (TODO: swap to `env_get`). NODE_LET evals value into a Value, calls `hm_insert` (TODO: `env_set`), returns make_int(0). NODE_IF/BLOCK return make_int(0) placeholder. NODE_BINOP unwraps both children's `.uni.int_val` to do arithmetic, wraps the result back via `make_int`.
 
-**`main`:** creates 4KB arena + session HashMap once, REPL loop reads line, inits parser, loops `parse_statement` + `eval` over the line's statements, prints result only if node wasn't NODE_LET / NODE_IF / NODE_BLOCK (statement-typed nodes don't produce useful values). Resets arena per line. On Ctrl-D: destroys both arena and env.
+**`main`:** still uses `HashMap *env` — TODO swap to `Environment *env = env_create(NULL);` next session. Prints `val.uni.int_val` (the unwrapped int). Otherwise unchanged.
 
 **Verified end-to-end on:**
 - Tier 1: `1+2` → 3; `3*4+5` → 17; `(1+2)*3` → 9
@@ -61,12 +74,87 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 
 **Known debt:**
 - `strndup`'d identifier names leak per line (lexer side)
-- NODE_LET / NODE_IF / NODE_BLOCK return 0 as placeholder (statements don't produce values)
+- NODE_LET / NODE_IF / NODE_BLOCK return placeholder Values (make_int(0))
 - Division by zero / overflow not handled
-- No block scoping — `let` inside an if-block writes to the global env (variable persists out of the block). Will likely matter at Tier 4 when functions need their own scopes.
+- No block scoping — `let` inside an if-block writes to the env (variable persists out of the block). Functions will introduce real scoping via env chain.
 - `print_token` unused (kept as debug scaffolding)
+- `print_token` doesn't yet handle TOK_FN, TOK_COMMA, TOK_RETURN
+- `main` still uses `HashMap *env` — needs swap to `Environment *env` (chain-aware) next session
+- Function-call envs leak by design (no GC) — fine for REPL sessions
 
 ---
+
+## Tier 4 — Functions + closures (in progress)
+
+### Design decisions (locked)
+- **Dynamically typed**, strict — values carry runtime tags (`VAL_INT`, `VAL_FUNCTION`); type mismatches error at runtime.
+- For Tier 4, two types only: int and function. The full type system (sized numerics, casts) defers to its own milestone.
+- Functions are first-class values; bound to names via `let` like any other value (no special `fn name(...) {}` declaration syntax — kept uniform for teaching).
+- `return` keyword added to enable conditional returns inside `if` (the body's last-expression-wins rule isn't enough when an `if` is in the way).
+- No assignment yet (only `let`-style binding); shadowing instead of mutation.
+- Lexical (static) scoping. Functions capture their defining env via pointer-to-live (not snapshot), so make_counter-style mutating closures work *if* assignment is added later.
+- Each function call gets a fresh env whose parent is the function's captured env.
+- Function-call envs leak (no GC) — acceptable for a REPL.
+
+### Grammar additions (planned)
+```
+factor    → ... | 'fn' '(' params? ')' block | factor '(' args? ')'
+statement → ... | 'return' expr ';'
+params    → IDENT (',' IDENT)*
+args      → expr (',' expr)*
+```
+
+### Done so far this session
+
+**Value migration (Stage B-lite of the type system) — complete**
+- New `value.h` with `Value` tagged union (`VAL_INT` + `VAL_FUNCTION`). `function` arm holds `params`, `body`, `captured_env` (forward-declared as `struct ParamList *`, `struct Node *`, `struct Environment *` — keeps `value.h` decoupled from the rest of the project).
+- `make_int(int)` helper in learning.c builds a VAL_INT Value.
+- `hash.h`/`hash.c` retrofitted: `Bucket.value`, `hm_insert`, `hm_get` all take/return `Value` instead of `int`.
+- `learning.c` retrofitted: eval returns Value; every NODE case wraps via `make_int` or unwraps via `.uni.int_val`. NODE_BINOP extracts both operands' int_val before arithmetic.
+- main prints `val.uni.int_val` instead of raw int.
+- Tier 1–3 verified post-migration: `1+2`→3, `let x = 5; x + 1`→6, the if/then variable persistence test→99, `3*4+5`→17. No regressions.
+
+**Lexer additions — complete**
+- 3 new TokenTypes: `TOK_FN`, `TOK_COMMA`, `TOK_RETURN`.
+- `,` handled in the single-char switch via `casehelper`.
+- `fn` (length 2) and `return` (length 6) added to the keyword-recognition chain in the identifier branch.
+- (TODO: `print_token` not yet extended for these.)
+
+**AST additions — complete**
+- 3 new NodeTypes: `NODE_FN_LITERAL`, `NODE_CALL`, `NODE_RETURN`.
+- New `ParamList` struct with proper self-referencing tag: `typedef struct ParamList { char *name; struct ParamList *next; } ParamList;`.
+- Node union grew three arms: `fn_literal` (params + count + body), `fn_call` (fn_expr + first_arg via `next`-chain), bare `value` for NODE_RETURN.
+
+**Environment chain — complete**
+- New `env.h`/`env.c` files. `Environment` struct = HashMap + parent pointer. Heap-allocated (NOT arena), because closures must outlive the line they were created on.
+- `env_create(parent)` malloc + hm_create + parent.
+- `env_destroy(env)` NULL no-op + hm_destroy + free; doesn't touch parent.
+- `env_get(env, key, *out)` walks the chain: try local hm_get; on miss, recurse into parent; return false at chain end.
+- `env_set(env, key, value)` always inserts locally (lexical scope semantics — `let` shadows outer bindings, never mutates them).
+- Compile command updated: `gcc -Wall -Wextra learning.c arena.c hash.c env.c -o learning`.
+
+### What's next (Tier 4 pickup)
+
+1. **Wire Environment into learning.c.** Replace `HashMap *env` with `Environment *env` everywhere. NODE_IDENT calls `env_get`. NODE_LET calls `env_set`. main creates `env_create(NULL)`, destroys via `env_destroy`. Tier 1–3 should still pass after the swap (single-env case).
+
+2. **Extend `print_token`** for the three new tokens (TOK_FN, TOK_COMMA, TOK_RETURN). Just plain tag prints.
+
+3. **Parser: function literal** in parse_factor:
+   - On TOK_FN: advance, expect `(`, parse comma-separated parameter idents into a ParamList chain, expect `)`, call parse_block for the body, build NODE_FN_LITERAL.
+
+4. **Parser: call expression** as postfix in parse_factor:
+   - After parsing any factor (INT, IDENT, paren-expr, fn literal), check if curr is `(`. If so, advance, parse comma-separated args (each arg is a `parse_comparison`-level expression chained via `next`), expect `)`, build NODE_CALL wrapping the prior result. Loop so that `f(1)(2)` parses (currying or a call returning a function).
+
+5. **Parser: return statement** in parse_statement:
+   - On TOK_RETURN: advance, parse_comparison for the return value, expect `;`, build NODE_RETURN.
+
+6. **Eval: NODE_FN_LITERAL** — produce a VAL_FUNCTION Value with fields copied from the AST node, `captured_env` = the eval's current env. Just allocate the Value; no work to do beyond capture.
+
+7. **Eval: NODE_CALL** — eval the fn_expr → Value (must be VAL_FUNCTION, else type error). Eval each arg → Value, in current env. Allocate a new Environment with parent = captured_env. Bind each parameter (from the ParamList) to the corresponding arg Value via env_set. Eval the body in the new env. Return whatever the body produced.
+
+8. **Eval: NODE_RETURN** — special exit. Two options: (a) longjmp-based unwinding to the nearest call frame, (b) a "return flag" carried through eval. Decide before implementing. Option (a) is cleaner; option (b) requires eval to plumb a "should I unwind?" flag through every recursion.
+
+9. **Test the closure** — `let make_adder = fn(n) { fn(x) { x + n; }; }; let add5 = make_adder(5); add5(10);` should print 15.
 
 ## Tier 3 — Booleans + if/else (complete)
 

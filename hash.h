@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "value.h"
 
 #define CAPACITY 16
 
@@ -16,7 +17,7 @@ typedef enum {
 typedef struct {
     State curr_state;
     char *key;
-    int value;
+    Value value;
 } Bucket;
 
 typedef struct {
@@ -25,10 +26,10 @@ typedef struct {
     size_t count;
 } HashMap;
 
-void hm_insert(HashMap *hm, const char *key, int value);
+void hm_insert(HashMap *hm, const char *key, Value value);
 HashMap *hm_create(void);
 void hm_destroy(HashMap *hm);
-bool hm_get(const HashMap *hm, const char *key, int *out);
+bool hm_get(const HashMap *hm, const char *key, Value *out);
 bool hm_delete(HashMap *hm, const char *key);
 
 
