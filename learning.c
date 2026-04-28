@@ -378,9 +378,6 @@ Node *parse_factor(Parser *p) {
         new->next = NULL;
         advance(p);
         return new;
-    } else {
-        fprintf(stderr, "unexpected token\n");
-        exit(1);
     }
     if(p->curr.type == TOK_TRUE) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
@@ -391,6 +388,8 @@ Node *parse_factor(Parser *p) {
         new->type = NODE_BOOL;
         new->uni.bool_val = 1;
         new->next = NULL;
+        advance(p);
+        return new;
     }
     if(p->curr.type == TOK_FALSE) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
@@ -401,6 +400,11 @@ Node *parse_factor(Parser *p) {
         new->type = NODE_BOOL;
         new->uni.bool_val = 0;
         new->next = NULL;
+        advance(p);
+        return new;
+    } else {
+        fprintf(stderr, "unexpected token\n");
+        exit(1);
     }
 }
 
