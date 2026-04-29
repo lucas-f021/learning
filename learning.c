@@ -5,6 +5,7 @@
 #include "arena.h"
 #include "hash.h"
 #include "value.h"
+#include "env.h"
 
 /* ===== VALUES ===== */
 
@@ -440,6 +441,58 @@ Node *parse_factor(Parser *p) {
         new->next = NULL;
         advance(p);
         return new;
+    } 
+    if(p->curr.type == TOK_FN) {
+        advance(p);
+        if(p->curr.type != TOK_LPAREN) {
+            fprintf(stderr, "Expected (\n");
+            exit(1);
+        }
+        advance(p);
+        size_t count = 0;
+        ParamList *head = NULL;
+        ParamList *tail = NULL;
+        while(p->curr.type != TOK_RPAREN) {
+            if(p->curr.type != TOK_IDENT) {
+                fprintf(stderr, "Expected an ident\n");
+                exit(1);
+            }
+            ParamList *params = arena_alloc(p->arena, sizeof(ParamList));
+            if(params == NULL) {
+                fprintf(stderr, "Arena alloc error\n");
+                exit(1);
+            }
+            params->name = p->curr.value.ident;
+            params->next = NULL;
+            if(head == NULL) {
+                head = params;
+                tail = params;
+            } else {
+                tail->next = params;
+                tail = params;
+            }
+            count++;
+            advance(p);
+            if(p->curr.type == TOK_COMMA) {
+                advance(p);
+            } else if(p->curr.type != TOK_RPAREN) {
+                fprintf(stderr, "Expected )\n");
+                exit(1);
+            }
+        }
+        advance(p);
+        Node *body = parse_block(p);
+        Node *fn = arena_alloc(p->arena, sizeof(Node));
+        if(fn == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
+        fn->type = NODE_FN_LITERAL;
+        fn->uni.fn_literal.body = body;
+        fn->uni.fn_literal.param_count = count;
+        fn->uni.fn_literal.params = head;
+        fn->next = NULL;
+        return fn;
     } else {
         fprintf(stderr, "unexpected token\n");
         exit(1);
@@ -637,7 +690,16 @@ static Value make_int(int n) {
     return val;
 }
 
-Value eval(Node *n, HashMap *env) {
+static Value make_function(ParamList *params, Node *body, Environment *env) {
+    Value val;
+    val.type = VAL_FUNCTION;
+    val.uni.function.body = body;
+    val.uni.function.captured_env = env;
+    val.uni.function.params = params;
+    return val;
+}
+
+Value eval(Node *n, Environment *env) {
     if (n->type == NODE_INT) {
         return make_int(n->uni.int_value);
     }
@@ -646,7 +708,7 @@ Value eval(Node *n, HashMap *env) {
     }
     if (n->type == NODE_IDENT) {
         Value out;
-        bool found = hm_get(env, n->uni.ident_name, &out);
+        bool found = env_get(env, n->uni.ident_name, &out);
         if (!found) {
             fprintf(stderr, "Undefined variable: %s\n", n->uni.ident_name);
             exit(1);
@@ -655,7 +717,7 @@ Value eval(Node *n, HashMap *env) {
     }
     if (n->type == NODE_LET) {
         Value val = eval(n->uni.let.value, env);
-        hm_insert(env, n->uni.let.name, val);
+        env_set(env, n->uni.let.name, val);
         return make_int(0);
     }
     if (n->type == NODE_IF) {
@@ -675,7 +737,10 @@ Value eval(Node *n, HashMap *env) {
              s = s->next;
            }
            return last;
-}
+    }
+    if(n->type == NODE_FN_LITERAL) {
+        return make_function(n->uni.fn_literal.params, n->uni.fn_literal.body, env);
+    }
     if (n->type == NODE_BINOP) {
         int x = eval(n->uni.binop.left, env).uni.int_val;
         int y = eval(n->uni.binop.right, env).uni.int_val;
@@ -699,7 +764,7 @@ int main(void) {
     Parser p;
     Lexer l;
     Arena *a = arena_create(4096);
-    HashMap *env = hm_create();
+    Environment *env = env_create(NULL);
     char x[128];
     while(1) {
         printf("Enter expression to compute: ");
@@ -707,7 +772,7 @@ int main(void) {
 
         if(res == NULL) {
             arena_destroy(a);
-            hm_destroy(env);
+            env_destroy(env);
             break;
         }
 

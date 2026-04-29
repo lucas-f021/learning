@@ -118,7 +118,7 @@ args      → expr (',' expr)*
 - 3 new TokenTypes: `TOK_FN`, `TOK_COMMA`, `TOK_RETURN`.
 - `,` handled in the single-char switch via `casehelper`.
 - `fn` (length 2) and `return` (length 6) added to the keyword-recognition chain in the identifier branch.
-- (TODO: `print_token` not yet extended for these.)
+- `print_token` extended with the three new cases.
 
 **AST additions — complete**
 - 3 new NodeTypes: `NODE_FN_LITERAL`, `NODE_CALL`, `NODE_RETURN`.
@@ -133,28 +133,37 @@ args      → expr (',' expr)*
 - `env_set(env, key, value)` always inserts locally (lexical scope semantics — `let` shadows outer bindings, never mutates them).
 - Compile command updated: `gcc -Wall -Wextra learning.c arena.c hash.c env.c -o learning`.
 
+**Environment wired into learning.c — complete**
+- `eval` signature now `Value eval(Node *n, Environment *env)`.
+- NODE_IDENT calls `env_get` (chain-aware).
+- NODE_LET calls `env_set` (always inserts locally, lexical-scope shadowing).
+- `main` creates `env_create(NULL)` for the session and `env_destroy(env)` on Ctrl-D.
+- Tier 1–3 regressions verified post-swap: `1+2`→3, `let x=5; x+1`→6, the if/then variable persistence test→99. Chain is length-1 (parent=NULL) until function calls create children.
+
+**Parser: function literal — complete**
+- `parse_factor` grew a `TOK_FN` case: advance, expect `(`, loop comma-separated TOK_IDENTs into a ParamList chain (head/tail/count locals same shape as parse_block), expect `)`, parse_block for body, allocate NODE_FN_LITERAL with params/count/body, return.
+- Empty params allowed (`fn() { ... }` works — loop exits immediately on TOK_RPAREN).
+- Each ParamList node arena-allocated, `name` taken from the lexer's strndup'd ident, `next` defensively NULL'd.
+
+**Eval: NODE_FN_LITERAL — complete**
+- New `make_function(ParamList *params, Node *body, Environment *env)` helper analogous to `make_int` — builds a VAL_FUNCTION Value with the AST pointers and the current eval env captured as `captured_env`.
+- NODE_FN_LITERAL eval case is a one-liner: return `make_function(...)` with the node's params/body and the current `env`. **The closure capture happens here** — current env at eval time becomes the function's captured env.
+- Verified: `let f = fn(a, b) { a + b; };` runs without crashing (NODE_LET suppresses print, function value gets stored in env).
+
 ### What's next (Tier 4 pickup)
 
-1. **Wire Environment into learning.c.** Replace `HashMap *env` with `Environment *env` everywhere. NODE_IDENT calls `env_get`. NODE_LET calls `env_set`. main creates `env_create(NULL)`, destroys via `env_destroy`. Tier 1–3 should still pass after the swap (single-env case).
+1. **Parser: call expression** as postfix in parse_factor:
+   - Restructure parse_factor so each branch assigns to a local `Node *result` rather than returning directly.
+   - At the bottom, before the final return, add a `while (p->curr.type == TOK_LPAREN)` loop that wraps `result` in a NODE_CALL each iteration: advance past `(`, parse comma-separated args (each is `parse_comparison`-level, chained via the existing Node `next` field — same trick as block statements), expect `)`, allocate NODE_CALL with `fn_expr = result, first_arg = head`, update `result = new_call_node`. Loop allows `f(1)(2)` for curried/returning calls.
 
-2. **Extend `print_token`** for the three new tokens (TOK_FN, TOK_COMMA, TOK_RETURN). Just plain tag prints.
+2. **Parser: return statement** in parse_statement:
+   - On TOK_RETURN: advance, parse_comparison for the return value, expect `;`, build NODE_RETURN with `value = expr`.
 
-3. **Parser: function literal** in parse_factor:
-   - On TOK_FN: advance, expect `(`, parse comma-separated parameter idents into a ParamList chain, expect `)`, call parse_block for the body, build NODE_FN_LITERAL.
+3. **Eval: NODE_CALL** — eval the fn_expr → Value (must be VAL_FUNCTION, else type error). Eval each arg → Value in the current env (args evaluated where written, not where defined). Allocate a new Environment with parent = the function's captured_env (lexical scoping — NOT current env). Bind each parameter to the corresponding arg Value via env_set. Eval the body in the new env. Return whatever the body produced. (Function-call envs leak — no GC.)
 
-4. **Parser: call expression** as postfix in parse_factor:
-   - After parsing any factor (INT, IDENT, paren-expr, fn literal), check if curr is `(`. If so, advance, parse comma-separated args (each arg is a `parse_comparison`-level expression chained via `next`), expect `)`, build NODE_CALL wrapping the prior result. Loop so that `f(1)(2)` parses (currying or a call returning a function).
+4. **Eval: NODE_RETURN** — special exit. Two options: (a) longjmp-based unwinding to the nearest call frame, (b) a "return flag" carried through eval. Decide before implementing. Option (a) is cleaner; option (b) requires eval to plumb a "should I unwind?" flag through every recursion. **Recommended: option (a) — `setjmp` in NODE_CALL's eval, `longjmp` in NODE_RETURN's eval.**
 
-5. **Parser: return statement** in parse_statement:
-   - On TOK_RETURN: advance, parse_comparison for the return value, expect `;`, build NODE_RETURN.
-
-6. **Eval: NODE_FN_LITERAL** — produce a VAL_FUNCTION Value with fields copied from the AST node, `captured_env` = the eval's current env. Just allocate the Value; no work to do beyond capture.
-
-7. **Eval: NODE_CALL** — eval the fn_expr → Value (must be VAL_FUNCTION, else type error). Eval each arg → Value, in current env. Allocate a new Environment with parent = captured_env. Bind each parameter (from the ParamList) to the corresponding arg Value via env_set. Eval the body in the new env. Return whatever the body produced.
-
-8. **Eval: NODE_RETURN** — special exit. Two options: (a) longjmp-based unwinding to the nearest call frame, (b) a "return flag" carried through eval. Decide before implementing. Option (a) is cleaner; option (b) requires eval to plumb a "should I unwind?" flag through every recursion.
-
-9. **Test the closure** — `let make_adder = fn(n) { fn(x) { x + n; }; }; let add5 = make_adder(5); add5(10);` should print 15.
+5. **Test the closure** — `let make_adder = fn(n) { fn(x) { x + n; }; }; let add5 = make_adder(5); add5(10);` should print 15.
 
 ## Tier 3 — Booleans + if/else (complete)
 
