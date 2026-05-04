@@ -2,10 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <setjmp.h>
 #include "arena.h"
 #include "hash.h"
 #include "value.h"
 #include "env.h"
+
+static jmp_buf *currrent_return_target = NULL;
+static Value return_value;
 
 /* ===== VALUES ===== */
 
@@ -129,9 +133,9 @@ Token next_token(Lexer *l) {
             t.type = TOK_INT;
             t.value.int_val = atoi(tmp);
             return t;
-        } else if(isalpha(*l->pos)) {
+        } else if(isalpha(*l->pos) || *l->pos == '_') {
             char *tmp = l->pos;
-            while(isalnum(*l->pos)) {
+            while(isalnum(*l->pos) || *l->pos == '_') {
                 l->pos++;
             }
             size_t len = l->pos - tmp;
@@ -358,6 +362,7 @@ Node *parse_term(Parser *p) {
 }
 
 Node *parse_factor(Parser *p) {
+    Node *result;
     if(p->curr.type == TOK_MINUS) {
         advance(p);
         Node *local = parse_factor(p);
@@ -380,10 +385,8 @@ Node *parse_factor(Parser *p) {
         binop_wrapper->uni.binop.left = syn_zero;
         binop_wrapper->uni.binop.right = local;
         binop_wrapper->next = NULL;
-        return binop_wrapper;
-    }
-
-    if(p->curr.type == TOK_INT) {
+        result = binop_wrapper;
+    } else if(p->curr.type == TOK_INT) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
         if(new == NULL) {
             fprintf(stderr, "Arena alloc error\n");
@@ -393,9 +396,8 @@ Node *parse_factor(Parser *p) {
         new->uni.int_value = p->curr.value.int_val;
         new->next = NULL;
         advance(p);
-        return new;
-    }
-    if(p->curr.type == TOK_LPAREN) {
+        result = new;
+    } else if(p->curr.type == TOK_LPAREN) {
         advance(p);
         Node *tmp =parse_expr(p);
         if(p->curr.type != TOK_RPAREN) {
@@ -404,9 +406,8 @@ Node *parse_factor(Parser *p) {
         }
         advance(p);
         tmp->next = NULL;
-        return tmp;
-    } 
-    if(p->curr.type == TOK_IDENT) {
+        result = tmp;
+    } else if(p->curr.type == TOK_IDENT) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
         if(new == NULL) {
             fprintf(stderr, "Arena alloc error\n");
@@ -416,9 +417,8 @@ Node *parse_factor(Parser *p) {
         new->uni.ident_name = p->curr.value.ident;
         new->next = NULL;
         advance(p);
-        return new;
-    }
-    if(p->curr.type == TOK_TRUE) {
+        result = new;
+    } else if(p->curr.type == TOK_TRUE) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
         if(new == NULL) {
             fprintf(stderr, "Arena alloc error\n");
@@ -428,9 +428,9 @@ Node *parse_factor(Parser *p) {
         new->uni.bool_val = 1;
         new->next = NULL;
         advance(p);
-        return new;
+        result = new;
     }
-    if(p->curr.type == TOK_FALSE) {
+    else if(p->curr.type == TOK_FALSE) {
         Node *new = arena_alloc(p->arena, sizeof(Node));
         if(new == NULL) {
             fprintf(stderr, "Arena alloc error\n");
@@ -440,9 +440,8 @@ Node *parse_factor(Parser *p) {
         new->uni.bool_val = 0;
         new->next = NULL;
         advance(p);
-        return new;
-    } 
-    if(p->curr.type == TOK_FN) {
+        result = new;
+    } else if(p->curr.type == TOK_FN) {
         advance(p);
         if(p->curr.type != TOK_LPAREN) {
             fprintf(stderr, "Expected (\n");
@@ -492,11 +491,45 @@ Node *parse_factor(Parser *p) {
         fn->uni.fn_literal.param_count = count;
         fn->uni.fn_literal.params = head;
         fn->next = NULL;
-        return fn;
+        result = fn;
     } else {
         fprintf(stderr, "unexpected token\n");
         exit(1);
     }
+    while(p->curr.type == TOK_LPAREN) {
+        advance(p);
+        Node *arg_head = NULL;
+        Node *arg_tail = NULL;
+        while(p->curr.type != TOK_RPAREN) {
+            Node *arg = parse_comparison(p);
+            arg->next = NULL;
+            if(arg_head == NULL) {
+                arg_head = arg;
+                arg_tail = arg;
+            } else {
+                arg_tail->next = arg;
+                arg_tail = arg;
+            }
+            if(p->curr.type == TOK_COMMA) {
+                advance(p);
+            } else if(p->curr.type != TOK_RPAREN) {
+                fprintf(stderr, "Expected )\n");
+                exit(1);
+            }
+        }
+        advance(p);
+        Node *call = arena_alloc(p->arena, sizeof(Node));
+            if(call == NULL) {
+                fprintf(stderr, "Arena alloc error\n");
+                exit(1);
+            }
+            call->type = NODE_CALL;
+            call->uni.fn_call.fn_expr = result;
+            call->uni.fn_call.first_arg = arg_head;
+            call->next = NULL;
+            result = call;
+    }
+    return result;
 }
 
 Node *parse_let(Parser *p) {
@@ -535,6 +568,24 @@ Node *parse_let(Parser *p) {
 }
 
 Node *parse_statement(Parser *p) {
+    if(p->curr.type == TOK_RETURN) {
+        advance(p);
+        Node *expr = parse_comparison(p);
+        if(p->curr.type != TOK_SEMI) {
+            fprintf(stderr, "Expected a ;\n");
+            exit(1);
+        }
+        advance(p);
+        Node *rtrn = arena_alloc(p->arena, sizeof(Node));
+        if(rtrn == NULL) {
+            fprintf(stderr, "Arena alloc error\n");
+            exit(1);
+        }
+        rtrn->type = NODE_RETURN;
+        rtrn->uni.value = expr;
+        rtrn->next = NULL;
+        return rtrn;
+    }
     if(p->curr.type == TOK_IF) {
         return parse_if(p);
     }
@@ -741,6 +792,32 @@ Value eval(Node *n, Environment *env) {
     if(n->type == NODE_FN_LITERAL) {
         return make_function(n->uni.fn_literal.params, n->uni.fn_literal.body, env);
     }
+    if(n->type == NODE_CALL) {
+        Value fn_val = eval(n->uni.fn_call.fn_expr, env);
+        if(fn_val.type != VAL_FUNCTION) {
+            fprintf(stderr, "Type not val_function, not callable\n");
+            exit(1);
+        }
+        Node *a = n->uni.fn_call.first_arg;
+        ParamList *p = fn_val.uni.function.params;
+        Environment *new_env = env_create(fn_val.uni.function.captured_env);
+        if(new_env == NULL) {
+            fprintf(stderr, "Enviorment create error in NODE_CALL eval\n");
+            exit(1);
+        }
+        while(a != NULL && p != NULL) {
+            Value v = eval(a, env);
+            env_set(new_env, p->name, v);
+            p = p->next;
+            a = a->next;
+        }
+        if(p != NULL || a != NULL) {
+            fprintf(stderr, "Arity mismatch\n");
+            exit(1);
+        }
+        Value result = eval(fn_val.uni.function.body, new_env);
+        return result;
+    }
     if (n->type == NODE_BINOP) {
         int x = eval(n->uni.binop.left, env).uni.int_val;
         int y = eval(n->uni.binop.right, env).uni.int_val;
@@ -788,7 +865,6 @@ int main(void) {
 
             }
         }
-            arena_reset(a);
     }
 
     return 0;

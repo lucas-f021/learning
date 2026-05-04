@@ -11,13 +11,13 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - **Tier 1 — Calculator** (complete): integers, `+ - * /`, parens, whitespace, REPL
 - **Tier 2 — Variables** (complete): `let NAME = EXPR;`, identifiers, multi-statement lines, session environment
 - **Tier 3 — Booleans + if/else** (complete): comparison ops (`<`, `>`, `==`), if/else with optional else, braced blocks, unary minus bonus
-- **Tier 4 — Functions + closures** (in progress — Value migration done, env-chain done, parser/eval for `fn`/call/return remaining): first-class functions, lexical scoping, captured environments
+- **Tier 4 — Functions + closures** (in progress — closures verified end-to-end; only `return` unwinding via longjmp pending): first-class functions, lexical scoping, captured environments
 - **Type system** (post-Tier-4, staged — see details below): `Value` tagged union, inferred literal types, sized numeric primitives + C-style casts
 - **Final step — File execution**: run `.lang` files instead of (or alongside) REPL
 
 ---
 
-## Current state snapshot (mid-Tier-4: Value migration + env chain done; parser/eval for fn/call/return pending)
+## Current state snapshot (Tier 4 closures working; only `return` longjmp pending)
 
 **Files:** `learning.c` (interpreter), `arena.h`/`arena.c` (AST allocator), `hash.h`/`hash.c` (string→Value map), `value.h` (Value tagged union), `env.h`/`env.c` (Environment chain), `.gitignore`, `PROGRESS.md`.
 
@@ -59,28 +59,28 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - `parse_expr` / `parse_term` / `parse_factor` → recursive-descent left-assoc over `+-` / `*/` / atoms
 - `parse_factor` handles INT, IDENT, TRUE, FALSE, `(expr)` with verified `)` close, **and unary minus** (`-EXPR` → synthesized `0 - EXPR` BINOP)
 
-**`eval(Node *n, HashMap *env)` → Value:** flat sequence of `if (n->type == X) { ... return; }` blocks for each node type. Returns Value (was int). NODE_INT/BOOL build via `make_int`. NODE_IDENT does `hm_get` (TODO: swap to `env_get`). NODE_LET evals value into a Value, calls `hm_insert` (TODO: `env_set`), returns make_int(0). NODE_IF/BLOCK return make_int(0) placeholder. NODE_BINOP unwraps both children's `.uni.int_val` to do arithmetic, wraps the result back via `make_int`.
+**`eval(Node *n, Environment *env)` → Value:** flat sequence of `if (n->type == X) { ... return; }` blocks for each node type. Returns Value. NODE_INT/BOOL build via `make_int`. NODE_IDENT does `env_get` (chain-aware). NODE_LET evals value, `env_set` locally. NODE_IF/BLOCK return placeholders / last-eval'd value. NODE_BINOP unwraps both children's int_val, wraps result. **Tier 4 cases:** NODE_FN_LITERAL returns `make_function(params, body, env)` — captures current env as closure environment. NODE_CALL evals fn_expr (must be VAL_FUNCTION), creates new env with `parent = captured_env` (lexical scope!), walks param + arg chains in lockstep eval'ing args and binding into the new env, evals body in the new env, returns result.
 
-**`main`:** still uses `HashMap *env` — TODO swap to `Environment *env = env_create(NULL);` next session. Prints `val.uni.int_val` (the unwrapped int). Otherwise unchanged.
+**`main`:** uses `Environment *env = env_create(NULL);` for the session, `env_destroy` on Ctrl-D. Arena is **not** reset between lines (closures need their AST to outlive the line they were defined on). Prints `val.uni.int_val` only when the statement type isn't NODE_LET / NODE_IF / NODE_BLOCK.
 
 **Verified end-to-end on:**
-- Tier 1: `1+2` → 3; `3*4+5` → 17; `(1+2)*3` → 9
-- Tier 2: `let x = 5; x + 1;` → 6; `let y = x * 2; y;` → 10 (cross-line persistence)
-- Tier 3: `let x = 5; let result = 0; if (x > 3) { let result = 99; } result;` → 99 (comparison + if + side effect persistence)
-- Tier 3: `let y = 10; let r = 0; if (y == 10) { let r = 100; } else { let r = 7; } r;` → 100 (== comparison, then-branch fires)
-- Tier 3: `let a = 1; let b = 2; if (a > b) { let z = 999; } else { let z = 42; } z;` → 42 (else-branch fires)
-- Tier 3: `if (1 < 2) { let win = 1; } win;` → 1 (literal comparison, bare if without else)
-- Unary minus: `let y = -3; y;` → -3
+- Tier 1–3 regressions still pass (`1+2` → 3, etc.)
+- Tier 4 same-line: `let f = fn(n) { n + 1; }; f(5);` → 6
+- Tier 4 cross-line: `let f = fn() { 42; };` then `f();` → 42
+- **Tier 4 closures (the make_adder pattern):**
+  - `let make_adder = fn(n) { fn(x) { x + n; }; };`
+  - `let add5 = make_adder(5);` and `let add100 = make_adder(100);`
+  - `add5(10);` → 15, `add100(7);` → 107, `add5(1);` → 6 — distinct closures, each with its own captured `n`, no interference. Lexical lookup of `n` walks the parent chain into the closure's captured env.
 
 **Known debt:**
 - `strndup`'d identifier names leak per line (lexer side)
-- NODE_LET / NODE_IF / NODE_BLOCK return placeholder Values (make_int(0))
-- Division by zero / overflow not handled
-- No block scoping — `let` inside an if-block writes to the env (variable persists out of the block). Functions will introduce real scoping via env chain.
+- NODE_LET / NODE_IF / NODE_BLOCK return placeholder Values (make_int(0)) — fine since main suppresses their print
+- Division by zero / overflow / arity-mismatch error paths could be friendlier
+- No block scoping — `let` inside an if-block writes to the current function's env (variable persists out of the block). Functions get their own scope correctly via the env chain.
+- Arena no longer resets per line — grows monotonically over a REPL session. Acceptable leak for REPL use.
+- Function-call envs leak by design (no GC) — also acceptable.
 - `print_token` unused (kept as debug scaffolding)
-- `print_token` doesn't yet handle TOK_FN, TOK_COMMA, TOK_RETURN
-- `main` still uses `HashMap *env` — needs swap to `Environment *env` (chain-aware) next session
-- Function-call envs leak by design (no GC) — fine for REPL sessions
+- `return` not yet implemented — only the *parser side* exists; eval needs longjmp/setjmp unwinding.
 
 ---
 
@@ -150,20 +150,107 @@ args      → expr (',' expr)*
 - NODE_FN_LITERAL eval case is a one-liner: return `make_function(...)` with the node's params/body and the current `env`. **The closure capture happens here** — current env at eval time becomes the function's captured env.
 - Verified: `let f = fn(a, b) { a + b; };` runs without crashing (NODE_LET suppresses print, function value gets stored in env).
 
-### What's next (Tier 4 pickup)
+**Parser: call expression (postfix in parse_factor) — complete**
+- parse_factor restructured: every prefix branch now assigns to a local `Node *result` instead of returning.
+- After the prefix dispatch, a `while (p->curr.type == TOK_LPAREN)` loop wraps `result` in NODE_CALL each iteration (chaining args via the existing Node `next` field, head/tail pattern). Loop enables `f(1)(2)` chained calls.
+- Single `return result;` at the bottom.
 
-1. **Parser: call expression** as postfix in parse_factor:
-   - Restructure parse_factor so each branch assigns to a local `Node *result` rather than returning directly.
-   - At the bottom, before the final return, add a `while (p->curr.type == TOK_LPAREN)` loop that wraps `result` in a NODE_CALL each iteration: advance past `(`, parse comma-separated args (each is `parse_comparison`-level, chained via the existing Node `next` field — same trick as block statements), expect `)`, allocate NODE_CALL with `fn_expr = result, first_arg = head`, update `result = new_call_node`. Loop allows `f(1)(2)` for curried/returning calls.
+**Eval: NODE_CALL — complete**
+- Evals fn_expr → Value, type-checks (must be VAL_FUNCTION).
+- `env_create(fn_val.uni.function.captured_env)` — new env's parent is the captured env (lexical scope, NOT current env).
+- Walks ParamList and arg chain in lockstep, eval'ing each arg in the current env, env_set'ing into the new env. Arity mismatch errors.
+- Evals body in the new env, returns its result.
 
-2. **Parser: return statement** in parse_statement:
-   - On TOK_RETURN: advance, parse_comparison for the return value, expect `;`, build NODE_RETURN with `value = expr`.
+**Lexer fix — underscores + digits in identifiers**
+- `isalpha(*l->pos) || *l->pos == '_'` for the leading char (allows `_x` if you want, plus letter-leading idents).
+- `isalnum(*l->pos) || *l->pos == '_'` for continuation — fixes the `add5` lex bug where digits were rejected mid-identifier.
 
-3. **Eval: NODE_CALL** — eval the fn_expr → Value (must be VAL_FUNCTION, else type error). Eval each arg → Value in the current env (args evaluated where written, not where defined). Allocate a new Environment with parent = the function's captured_env (lexical scoping — NOT current env). Bind each parameter to the corresponding arg Value via env_set. Eval the body in the new env. Return whatever the body produced. (Function-call envs leak — no GC.)
+**Arena reset removed from main**
+- Closures need their AST (params + body) to outlive the line they were defined on. The per-line `arena_reset` invalidated those pointers and segfaulted under cross-line closure tests.
+- Arena now grows monotonically over a session. Acceptable leak for REPL.
 
-4. **Eval: NODE_RETURN** — special exit. Two options: (a) longjmp-based unwinding to the nearest call frame, (b) a "return flag" carried through eval. Decide before implementing. Option (a) is cleaner; option (b) requires eval to plumb a "should I unwind?" flag through every recursion. **Recommended: option (a) — `setjmp` in NODE_CALL's eval, `longjmp` in NODE_RETURN's eval.**
+**Parser: return statement — complete**
+- `parse_statement` grew a TOK_RETURN branch: advance, parse_comparison for value, expect SEMI + advance, allocate NODE_RETURN with `uni.value = expr`, `next = NULL`. Returns.
 
-5. **Test the closure** — `let make_adder = fn(n) { fn(x) { x + n; }; }; let add5 = make_adder(5); add5(10);` should print 15.
+### What's next (Tier 4 pickup — only `return` eval remaining)
+
+1. **Eval: NODE_RETURN via setjmp/longjmp.** Two pieces that must work together:
+
+   a. **Top-of-file additions:**
+      - `#include <setjmp.h>`
+      - `static jmp_buf *current_return_target = NULL;`
+      - `static Value return_value;`
+
+   b. **Modify NODE_CALL eval** so the body eval is wrapped in setjmp:
+      ```
+      jmp_buf my_buf;
+      jmp_buf *prev = current_return_target;
+      current_return_target = &my_buf;
+
+      Value result;
+      if (setjmp(my_buf) == 0) {
+          result = eval(fn_val.uni.function.body, new_env);  // normal path
+      } else {
+          result = return_value;                              // longjmp landed here
+      }
+
+      current_return_target = prev;
+      return result;
+      ```
+      The push/pop of `prev` is so nested function calls each have their own buffer.
+
+   c. **Add NODE_RETURN eval case:**
+      ```
+      return_value = eval(n->uni.value, env);
+      if (current_return_target == NULL) {
+          fprintf(stderr, "return outside of function\n");
+          exit(1);
+      }
+      longjmp(*current_return_target, 1);
+      exit(1);  // unreachable, silences no-return-path warning
+      ```
+
+   The mechanism in plain English: setjmp saves a "checkpoint" of execution state; longjmp teleports control back to that checkpoint with a flag. setjmp returns 0 on the first pass, non-zero after a longjmp. So the if/else reads as "first pass: do work normally; got teleported here: pick up the value the longjmp left."
+
+2. **Test recursion** — `let factorial = fn(n) { if (n < 2) { return 1; } return n * factorial(n - 1); }; factorial(5);` should print 120. Other good tests:
+   - `let fib = fn(n) { if (n < 2) { return n; } return fib(n-1) + fib(n-2); }; fib(10);` → 55
+   - `let abs = fn(x) { if (x < 0) { return -x; } return x; }; abs(-7);` → 7
+
+3. **Tier 4 ships when factorial works.** That's the milestone.
+
+### Standalone setjmp/longjmp demo (for next-session reference)
+
+If the mechanism still feels alien, save this to `/tmp/sj.c`, compile with `gcc /tmp/sj.c -o /tmp/sj && /tmp/sj`. It's the entire pattern in 20 lines, no interpreter:
+
+```c
+#include <stdio.h>
+#include <setjmp.h>
+
+jmp_buf buf;
+int return_value;
+
+void inner(void) {
+    return_value = 42;
+    longjmp(buf, 1);              // jumps back to setjmp
+    printf("never reached\n");    // unreachable
+}
+
+int main(void) {
+    int result;
+    if (setjmp(buf) == 0) {
+        printf("first pass\n");
+        inner();                  // longjmps out
+        result = -1;              // unreachable
+    } else {
+        printf("returned via longjmp\n");
+        result = return_value;
+    }
+    printf("result: %d\n", result);
+    return 0;
+}
+```
+
+Output: `first pass / returned via longjmp / result: 42`. Once that clicks, NODE_CALL is the same `if (setjmp(buf) == 0)` shape with `eval(body, ...)` in place of `inner()`.
 
 ## Tier 3 — Booleans + if/else (complete)
 
