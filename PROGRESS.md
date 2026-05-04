@@ -11,13 +11,13 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - **Tier 1 — Calculator** (complete): integers, `+ - * /`, parens, whitespace, REPL
 - **Tier 2 — Variables** (complete): `let NAME = EXPR;`, identifiers, multi-statement lines, session environment
 - **Tier 3 — Booleans + if/else** (complete): comparison ops (`<`, `>`, `==`), if/else with optional else, braced blocks, unary minus bonus
-- **Tier 4 — Functions + closures** (in progress — closures verified end-to-end; only `return` unwinding via longjmp pending): first-class functions, lexical scoping, captured environments
+- **Tier 4 — Functions + closures** (complete): first-class functions, lexical scoping, captured environments, recursion via setjmp/longjmp `return`
 - **Type system** (post-Tier-4, staged — see details below): `Value` tagged union, inferred literal types, sized numeric primitives + C-style casts
 - **Final step — File execution**: run `.lang` files instead of (or alongside) REPL
 
 ---
 
-## Current state snapshot (Tier 4 closures working; only `return` longjmp pending)
+## Current state snapshot (Tier 4 complete — recursion, closures, return all work)
 
 **Files:** `learning.c` (interpreter), `arena.h`/`arena.c` (AST allocator), `hash.h`/`hash.c` (string→Value map), `value.h` (Value tagged union), `env.h`/`env.c` (Environment chain), `.gitignore`, `PROGRESS.md`.
 
@@ -70,21 +70,28 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - **Tier 4 closures (the make_adder pattern):**
   - `let make_adder = fn(n) { fn(x) { x + n; }; };`
   - `let add5 = make_adder(5);` and `let add100 = make_adder(100);`
-  - `add5(10);` → 15, `add100(7);` → 107, `add5(1);` → 6 — distinct closures, each with its own captured `n`, no interference. Lexical lookup of `n` walks the parent chain into the closure's captured env.
+  - `add5(10);` → 15, `add100(7);` → 107, `add5(1);` → 6 — distinct closures, each with its own captured `n`, no interference.
+- **Tier 4 recursion via setjmp/longjmp `return`:**
+  - `let factorial = fn(n) { if (n < 2) { return 1; } return n * factorial(n - 1); }; factorial(5);` → 120
+  - `factorial(10);` → 3,628,800
+  - `let fib = fn(n) { if (n < 2) { return n; } return fib(n-1) + fib(n-2); }; fib(10);` → 55, `fib(15);` → 610
 
-**Known debt:**
+**Known debt (accepted):**
 - `strndup`'d identifier names leak per line (lexer side)
-- NODE_LET / NODE_IF / NODE_BLOCK return placeholder Values (make_int(0)) — fine since main suppresses their print
+- NODE_LET / NODE_IF / NODE_BLOCK return placeholder `make_int(0)` — fine, main suppresses their print
 - Division by zero / overflow / arity-mismatch error paths could be friendlier
 - No block scoping — `let` inside an if-block writes to the current function's env (variable persists out of the block). Functions get their own scope correctly via the env chain.
-- Arena no longer resets per line — grows monotonically over a REPL session. Acceptable leak for REPL use.
-- Function-call envs leak by design (no GC) — also acceptable.
+- Function-call envs leak by design (no GC) — fundamental without GC; closures might reference them.
 - `print_token` unused (kept as debug scaffolding)
-- `return` not yet implemented — only the *parser side* exists; eval needs longjmp/setjmp unwinding.
+
+**Polish applied:**
+- `arena_mark` / `arena_release` helpers in arena.h/c.
+- `Parser` gained `bool saw_fn_literal;` flag (init false in init_parser, set true in parse_factor's TOK_FN case).
+- `main` saves a mark before parsing each line; if the line had no `fn` literal, releases the arena back. Lines like `1+2;` and `factorial(10);` now reclaim their AST per line. Only function-defining lines accumulate.
 
 ---
 
-## Tier 4 — Functions + closures (in progress)
+## Tier 4 — Functions + closures (complete)
 
 ### Design decisions (locked)
 - **Dynamically typed**, strict — values carry runtime tags (`VAL_INT`, `VAL_FUNCTION`); type mismatches error at runtime.
@@ -172,85 +179,21 @@ args      → expr (',' expr)*
 **Parser: return statement — complete**
 - `parse_statement` grew a TOK_RETURN branch: advance, parse_comparison for value, expect SEMI + advance, allocate NODE_RETURN with `uni.value = expr`, `next = NULL`. Returns.
 
-### What's next (Tier 4 pickup — only `return` eval remaining)
+**`return` via setjmp/longjmp — complete**
+- `#include <setjmp.h>` near the other includes.
+- File-scope globals: `static jmp_buf *current_return_target = NULL;` and `static Value return_value;`.
+- NODE_CALL eval wraps the body eval: declares a local `jmp_buf my_buf`, saves `prev = current_return_target`, sets the global to `&my_buf`, calls `setjmp` — on the 0-return (normal flow) it eval's the body, on non-zero (a longjmp landed here) it picks up `return_value`. After either path, restores `current_return_target = prev` and returns the result. The push/pop is so nested function calls each have their own buffer.
+- NODE_RETURN eval evaluates the return expression into the global `return_value`, NULL-checks `current_return_target` (to catch `return` outside a function), then `longjmp(*current_return_target, 1)`. An unreachable `exit(1)` after silences the no-return-path warning.
 
-1. **Eval: NODE_RETURN via setjmp/longjmp.** Two pieces that must work together:
+**Arena polish (mark/release per closure-free line) — complete**
+- `arena_mark(Arena *a)` returns `a->nxt_byte`; `arena_release(Arena *a, void *mark)` sets `nxt_byte = mark`. Two trivial functions added to arena.h/c.
+- `Parser` gained `bool saw_fn_literal;`. Init false in `init_parser`, set true at the top of `parse_factor`'s TOK_FN case.
+- Around the per-line block in `main`: save a mark before `init_parser`; after the inner eval loop, if `!p.saw_fn_literal`, `arena_release(a, mark)`. Lines like `1+2;`, `factorial(10);`, `let x = 5; x + 1;` reclaim their AST per line. Only function-defining lines accumulate, which is correct — closures need their AST.
 
-   a. **Top-of-file additions:**
-      - `#include <setjmp.h>`
-      - `static jmp_buf *current_return_target = NULL;`
-      - `static Value return_value;`
+**VS Code task fixed**
+- `.vscode/tasks.json` now compiles all four C files (`learning.c arena.c hash.c env.c`). Previously missed `env.c` and Cmd-Shift-B failed to link.
 
-   b. **Modify NODE_CALL eval** so the body eval is wrapped in setjmp:
-      ```
-      jmp_buf my_buf;
-      jmp_buf *prev = current_return_target;
-      current_return_target = &my_buf;
-
-      Value result;
-      if (setjmp(my_buf) == 0) {
-          result = eval(fn_val.uni.function.body, new_env);  // normal path
-      } else {
-          result = return_value;                              // longjmp landed here
-      }
-
-      current_return_target = prev;
-      return result;
-      ```
-      The push/pop of `prev` is so nested function calls each have their own buffer.
-
-   c. **Add NODE_RETURN eval case:**
-      ```
-      return_value = eval(n->uni.value, env);
-      if (current_return_target == NULL) {
-          fprintf(stderr, "return outside of function\n");
-          exit(1);
-      }
-      longjmp(*current_return_target, 1);
-      exit(1);  // unreachable, silences no-return-path warning
-      ```
-
-   The mechanism in plain English: setjmp saves a "checkpoint" of execution state; longjmp teleports control back to that checkpoint with a flag. setjmp returns 0 on the first pass, non-zero after a longjmp. So the if/else reads as "first pass: do work normally; got teleported here: pick up the value the longjmp left."
-
-2. **Test recursion** — `let factorial = fn(n) { if (n < 2) { return 1; } return n * factorial(n - 1); }; factorial(5);` should print 120. Other good tests:
-   - `let fib = fn(n) { if (n < 2) { return n; } return fib(n-1) + fib(n-2); }; fib(10);` → 55
-   - `let abs = fn(x) { if (x < 0) { return -x; } return x; }; abs(-7);` → 7
-
-3. **Tier 4 ships when factorial works.** That's the milestone.
-
-### Standalone setjmp/longjmp demo (for next-session reference)
-
-If the mechanism still feels alien, save this to `/tmp/sj.c`, compile with `gcc /tmp/sj.c -o /tmp/sj && /tmp/sj`. It's the entire pattern in 20 lines, no interpreter:
-
-```c
-#include <stdio.h>
-#include <setjmp.h>
-
-jmp_buf buf;
-int return_value;
-
-void inner(void) {
-    return_value = 42;
-    longjmp(buf, 1);              // jumps back to setjmp
-    printf("never reached\n");    // unreachable
-}
-
-int main(void) {
-    int result;
-    if (setjmp(buf) == 0) {
-        printf("first pass\n");
-        inner();                  // longjmps out
-        result = -1;              // unreachable
-    } else {
-        printf("returned via longjmp\n");
-        result = return_value;
-    }
-    printf("result: %d\n", result);
-    return 0;
-}
-```
-
-Output: `first pass / returned via longjmp / result: 42`. Once that clicks, NODE_CALL is the same `if (setjmp(buf) == 0)` shape with `eval(body, ...)` in place of `inner()`.
+**Tier 4 ships.** Recursion via factorial(5)=120 confirms the full lex → parse → eval → call → return → unwind cycle works. `make_adder` confirms lexical closure capture. The language is complete in the practical Turing-complete sense.
 
 ## Tier 3 — Booleans + if/else (complete)
 

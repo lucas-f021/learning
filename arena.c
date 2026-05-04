@@ -48,3 +48,11 @@ void *arena_alloc(Arena *a, size_t size) {
     return (void *)algn;
 }
 
+void *arena_mark(Arena *a) {
+    return a->nxt_byte;
+}
+
+void arena_release(Arena *a, void *mark) {
+    a->nxt_byte = mark;
+}
+

@@ -13,6 +13,8 @@ Arena *arena_create(size_t size);
 void arena_destroy(Arena *a);
 void arena_reset(Arena *a);
 void *arena_alloc(Arena *a, size_t size);
+void *arena_mark(Arena *a);
+void arena_release(Arena *a, void *mark);
 
 
 #endif

@@ -8,7 +8,7 @@
 #include "value.h"
 #include "env.h"
 
-static jmp_buf *currrent_return_target = NULL;
+static jmp_buf *current_return_target = NULL;
 static Value return_value;
 
 /* ===== VALUES ===== */
@@ -284,12 +284,14 @@ typedef struct {
     Lexer *l;
     Token curr;
     Arena *arena;
+    bool saw_fn_literal;
 } Parser;
 
 void init_parser(Parser *p, Lexer *lex, Arena *arena) {
     p->l = lex;
     p->curr = next_token(lex);
     p->arena = arena;
+    p->saw_fn_literal = false;
 }
 
 static Token advance(Parser *p) {
@@ -442,6 +444,7 @@ Node *parse_factor(Parser *p) {
         advance(p);
         result = new;
     } else if(p->curr.type == TOK_FN) {
+        p->saw_fn_literal = true;
         advance(p);
         if(p->curr.type != TOK_LPAREN) {
             fprintf(stderr, "Expected (\n");
@@ -815,8 +818,28 @@ Value eval(Node *n, Environment *env) {
             fprintf(stderr, "Arity mismatch\n");
             exit(1);
         }
-        Value result = eval(fn_val.uni.function.body, new_env);
+        jmp_buf my_buf;
+        jmp_buf *prev = current_return_target;
+        current_return_target = &my_buf;
+
+        Value result;
+        if(setjmp(my_buf) == 0) {
+            result = eval(fn_val.uni.function.body, new_env);
+        } else {
+            result = return_value;
+        }
+
+        current_return_target = prev;
         return result;
+    }
+    if(n->type == NODE_RETURN) {
+        return_value = eval(n->uni.value, env);
+        if(current_return_target == NULL) {
+            fprintf(stderr, "return outside of function\n");
+            exit(1);
+        }
+        longjmp(*current_return_target, 1);
+        exit(1);
     }
     if (n->type == NODE_BINOP) {
         int x = eval(n->uni.binop.left, env).uni.int_val;
@@ -853,6 +876,7 @@ int main(void) {
             break;
         }
 
+        void *mark = arena_mark(a);
         l.pos=x;
 
         init_parser(&p, &l, a);
@@ -864,6 +888,9 @@ int main(void) {
                 printf("%d\n", val.uni.int_val);
 
             }
+        }
+        if(!p.saw_fn_literal) {
+            arena_release(a, mark);
         }
     }
 
