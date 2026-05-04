@@ -860,10 +860,42 @@ Value eval(Node *n, Environment *env) {
 
 /* ===== MAIN ===== */
 
-int main(void) {
+int main(int argc, char **argv) {
+    if(argc > 1) {
+        FILE *f = fopen(argv[1], "r");
+        if(f == NULL) {
+            fprintf(stderr, "file opening error\n");
+            exit(1);
+        }
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        char *buf = malloc(size + 1);
+        fread(buf, 1, size, f);
+        buf[size] = '\0';
+        fclose(f);
+
+        Parser p;
+        Arena *a = arena_create(1024 * 1024);
+        Environment *env = env_create(NULL);
+        Lexer l;
+        l.pos = buf;
+        init_parser(&p, &l, a);
+        while(p.curr.type != TOK_EOF) {
+            Node *tmp = parse_statement(&p);
+            Value val = eval(tmp, env);
+            if(tmp->type != NODE_LET && tmp->type != NODE_IF && tmp->type != NODE_BLOCK  ) {
+                printf("%d\n", val.uni.int_val);
+            }
+        }
+        free(buf);
+        arena_destroy(a);
+        env_destroy(env);
+        return 0;
+    } else {
     Parser p;
     Lexer l;
-    Arena *a = arena_create(4096);
+    Arena *a = arena_create(1024 * 1024);
     Environment *env = env_create(NULL);
     char x[128];
     while(1) {
@@ -895,4 +927,5 @@ int main(void) {
     }
 
     return 0;
+    }
 }

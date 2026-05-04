@@ -13,7 +13,7 @@ source text  →  [Lexer]  →  tokens  →  [Parser]  →  AST  →  [Evaluator
 - **Tier 3 — Booleans + if/else** (complete): comparison ops (`<`, `>`, `==`), if/else with optional else, braced blocks, unary minus bonus
 - **Tier 4 — Functions + closures** (complete): first-class functions, lexical scoping, captured environments, recursion via setjmp/longjmp `return`
 - **Type system** (post-Tier-4, staged — see details below): `Value` tagged union, inferred literal types, sized numeric primitives + C-style casts
-- **Final step — File execution**: run `.lang` files instead of (or alongside) REPL
+- **File execution** (complete): `./learning prog.lf` reads + runs a script file. Falls back to REPL when no arg given.
 
 ---
 
